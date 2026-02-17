@@ -1,0 +1,99 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Creates the HubSpotPartnerCentralServiceRole IAM role that grants
+  the Lambda functions permission to call AWS Partner Central APIs.
+  Deploy this BEFORE the main SAM template.
+
+Parameters:
+  LambdaAccountId:
+    Type: String
+    Description: AWS Account ID where the Lambda functions are deployed
+    Default: ""
+    
+  AllowSameAccount:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: Allow assumption from the same account (set false for cross-account)
+
+Conditions:
+  SameAccount: !Equals [!Ref AllowSameAccount, "true"]
+
+Resources:
+  HubSpotPartnerCentralServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: HubSpotPartnerCentralServiceRole
+      Description: >
+        Assumed by the HubSpot integration Lambda functions to interact
+        with AWS Partner Central Selling APIs.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowLambdaAssumeRole
+            Effect: Allow
+            Principal:
+              AWS: !If
+                - SameAccount
+                - !Sub "arn:aws:iam::${AWS::AccountId}:root"
+                - !Sub "arn:aws:iam::${LambdaAccountId}:root"
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: "HubSpotPartnerCentralIntegration"
+
+      ManagedPolicyArns:
+        # AWS-managed policy for Partner Central full access
+        # Scope down with the inline policy below for least privilege
+        - arn:aws:iam::aws:policy/AWSPartnerCentralOpportunityManagement
+
+      Policies:
+        - PolicyName: PartnerCentralScopedAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: OpportunityReadWrite
+                Effect: Allow
+                Action:
+                  - partnercentral-selling:CreateOpportunity
+                  - partnercentral-selling:UpdateOpportunity
+                  - partnercentral-selling:GetOpportunity
+                  - partnercentral-selling:ListOpportunities
+                  - partnercentral-selling:AssociateOpportunity
+                Resource: "*"
+
+              - Sid: EngagementInvitations
+                Effect: Allow
+                Action:
+                  - partnercentral-selling:ListEngagementInvitations
+                  - partnercentral-selling:GetEngagementInvitation
+                  - partnercentral-selling:AcceptEngagementInvitation
+                  - partnercentral-selling:RejectEngagementInvitation
+                Resource: "*"
+
+              - Sid: CatalogRead
+                Effect: Allow
+                Action:
+                  - partnercentral-selling:GetResourceSnapshot
+                  - partnercentral-selling:ListEngagements
+                Resource: "*"
+
+      Tags:
+        - Key: ManagedBy
+          Value: HubSpotPartnerCentralSync
+        - Key: Purpose
+          Value: PartnerCentralAPIAccess
+
+Outputs:
+  RoleArn:
+    Description: >
+      Use this ARN as the PARTNER_CENTRAL_ROLE_ARN parameter when deploying
+      the main SAM template.
+    Value: !GetAtt HubSpotPartnerCentralServiceRole.Arn
+    Export:
+      Name: HubSpotPartnerCentralServiceRoleArn
+
+  RoleName:
+    Value: !Ref HubSpotPartnerCentralServiceRole
+    Export:
+      Name: HubSpotPartnerCentralServiceRoleName
