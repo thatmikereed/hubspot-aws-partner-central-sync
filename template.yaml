@@ -1,0 +1,189 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+
+Description: >
+  HubSpot ↔ AWS Partner Central Sync
+  - Inbound:  HubSpot deal webhook → Partner Central opportunity (when title contains #AWS)
+  - Outbound: Scheduled poll of Partner Central invitations → auto-accept + HubSpot deal creation
+
+# ============================================================
+# Parameters
+# ============================================================
+Parameters:
+  HubSpotAccessToken:
+    Type: String
+    NoEcho: true
+    Description: HubSpot Private App access token
+
+  HubSpotWebhookSecret:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: HubSpot webhook signing secret (optional but recommended)
+
+  PartnerCentralRoleArn:
+    Type: String
+    Default: ""
+    Description: >
+      Full ARN of the HubSpotPartnerCentralServiceRole. Leave blank to
+      auto-construct from the deploying account ID.
+
+  InvitationPollIntervalMinutes:
+    Type: Number
+    Default: 5
+    MinValue: 1
+    MaxValue: 60
+    Description: How often (in minutes) to poll Partner Central for new invitations
+
+  Environment:
+    Type: String
+    Default: production
+    AllowedValues: [production, staging, development]
+
+# ============================================================
+# Globals
+# ============================================================
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 60
+    MemorySize: 256
+    Architectures: [arm64]
+    Environment:
+      Variables:
+        HUBSPOT_ACCESS_TOKEN: !Ref HubSpotAccessToken
+        HUBSPOT_WEBHOOK_SECRET: !Ref HubSpotWebhookSecret
+        PARTNER_CENTRAL_ROLE_ARN: !Ref PartnerCentralRoleArn
+        ENVIRONMENT: !Ref Environment
+        LOG_LEVEL: INFO
+
+# ============================================================
+# Resources
+# ============================================================
+Resources:
+
+  # ----------------------------------------------------------
+  # Shared Lambda Layer (common package)
+  # ----------------------------------------------------------
+  CommonLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: !Sub "hubspot-pc-common-${Environment}"
+      Description: Shared common modules (mappers, clients)
+      ContentUri: src/
+      CompatibleRuntimes: [python3.12]
+      RetentionPolicy: Retain
+    Metadata:
+      BuildMethod: python3.12
+
+  # ----------------------------------------------------------
+  # Lambda 1: HubSpot Webhook → Partner Central
+  # ----------------------------------------------------------
+  HubSpotToPartnerCentralFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "hubspot-to-partner-central-${Environment}"
+      CodeUri: src/hubspot_to_partner_central/
+      Handler: handler.lambda_handler
+      Description: Receives HubSpot deal webhooks and creates Partner Central opportunities
+      Layers:
+        - !Ref CommonLayer
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action: sts:AssumeRole
+              Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/HubSpotPartnerCentralServiceRole"
+      Events:
+        HubSpotWebhook:
+          Type: Api
+          Properties:
+            RestApiId: !Ref WebhookApi
+            Path: /webhook/hubspot
+            Method: POST
+
+  # ----------------------------------------------------------
+  # Lambda 2: Partner Central Invitations → HubSpot (Scheduled)
+  # ----------------------------------------------------------
+  PartnerCentralToHubSpotFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "partner-central-to-hubspot-${Environment}"
+      CodeUri: src/partner_central_to_hubspot/
+      Handler: handler.lambda_handler
+      Description: Polls Partner Central for pending invitations, accepts them, and syncs to HubSpot
+      Layers:
+        - !Ref CommonLayer
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action: sts:AssumeRole
+              Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/HubSpotPartnerCentralServiceRole"
+      Events:
+        ScheduledPoll:
+          Type: Schedule
+          Properties:
+            Schedule: !Sub "rate(${InvitationPollIntervalMinutes} minutes)"
+            Name: !Sub "partner-central-invitation-poll-${Environment}"
+            Description: Polls Partner Central for new invitations
+            Enabled: true
+
+  # ----------------------------------------------------------
+  # API Gateway for inbound HubSpot webhooks
+  # ----------------------------------------------------------
+  WebhookApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub "hubspot-partner-central-webhook-${Environment}"
+      StageName: !Ref Environment
+      Description: API Gateway for HubSpot webhook ingestion
+      EndpointConfiguration:
+        Type: REGIONAL
+      Auth:
+        DefaultAuthorizer: NONE  # Signature verified in Lambda
+
+  # ----------------------------------------------------------
+  # SSM Parameters for secrets (alternative to env vars)
+  # ----------------------------------------------------------
+  HubSpotTokenParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/hubspot-pc-sync/${Environment}/hubspot-access-token"
+      Type: SecureString
+      Value: !Ref HubSpotAccessToken
+      Description: HubSpot Private App access token
+
+  # ----------------------------------------------------------
+  # CloudWatch Log Groups with retention
+  # ----------------------------------------------------------
+  HubSpotToPartnerCentralLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/hubspot-to-partner-central-${Environment}"
+      RetentionInDays: 30
+
+  PartnerCentralToHubSpotLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/partner-central-to-hubspot-${Environment}"
+      RetentionInDays: 30
+
+# ============================================================
+# Outputs
+# ============================================================
+Outputs:
+  WebhookUrl:
+    Description: >
+      HubSpot webhook URL — register this in your HubSpot app's webhook settings
+      under Subscriptions > deal.creation
+    Value: !Sub "https://${WebhookApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/webhook/hubspot"
+
+  HubSpotToPartnerCentralFunctionArn:
+    Value: !GetAtt HubSpotToPartnerCentralFunction.Arn
+
+  PartnerCentralToHubSpotFunctionArn:
+    Value: !GetAtt PartnerCentralToHubSpotFunction.Arn
+
+  ApiGatewayId:
+    Value: !Ref WebhookApi
