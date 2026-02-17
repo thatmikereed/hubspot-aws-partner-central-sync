@@ -1,169 +1,250 @@
 """
 Tests for the Partner Central Invitations → HubSpot Lambda handler.
+Validates the correct use of StartEngagementByAcceptingInvitationTask.
 """
 
 import json
 import pytest
-from unittest.mock import MagicMock, patch, call
+from datetime import date, timedelta
+from unittest.mock import MagicMock, patch
 
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
 
 @pytest.fixture
 def pending_invitation():
     return {
-        "Id": "inv-abc123",
+        "Id": "arn:aws:partnercentral:us-east-1:aws:catalog/AWS/engagement-invitation/engi-abc123",
         "Status": "PENDING",
         "EngagementTitle": "AWS Opportunity Share",
-        "InvitationDate": "2025-01-15T10:00:00Z",
     }
 
 
 @pytest.fixture
-def invitation_detail():
+def inv_detail():
     return {
-        "Id": "inv-abc123",
+        "Id": "arn:aws:partnercentral:us-east-1:aws:catalog/AWS/engagement-invitation/engi-abc123",
         "Status": "PENDING",
+        "PayloadType": "OpportunityInvitation",
         "Payload": {
             "OpportunityInvitation": {
-                "OpportunitySummary": {
-                    "Id": "opp-xyz789",
-                }
+                "OpportunitySummary": {"Id": "O7654321"}
             }
         },
     }
 
 
 @pytest.fixture
-def full_opportunity():
+def task_response_complete():
     return {
-        "Id": "opp-xyz789",
-        "Arn": "arn:aws:partnercentral::123456789012:opportunity/opp-xyz789",
+        "TaskId": "task-xyz",
+        "TaskStatus": "COMPLETE",
+        "OpportunityId": "O7654321",
+    }
+
+
+@pytest.fixture
+def full_opportunity():
+    future = (date.today() + timedelta(days=60)).isoformat()
+    return {
+        "Id": "O7654321",
+        "Arn": "arn:aws:partnercentral:::O7654321",
         "Project": {
             "Title": "Enterprise Cloud Migration",
-            "CustomerBusinessProblem": "Migrate 200 servers to AWS",
-            "Stage": "Qualified",
-            "TargetCompletionDate": "2025-09-30",
+            "CustomerBusinessProblem": "Migrate 200 servers to AWS for cost and scale benefits.",
             "ExpectedCustomerSpend": [
                 {"Amount": "75000", "CurrencyCode": "USD", "Frequency": "Monthly"}
             ],
         },
         "LifeCycle": {
             "Stage": "Qualified",
-            "TargetCloseDate": "2025-09-30",
+            "ReviewStatus": "Approved",
+            "TargetCloseDate": future,
         },
         "Customer": {
-            "Account": {
-                "CompanyName": "Acme Corp",
-                "CountryCode": "US",
-            }
+            "Account": {"CompanyName": "Acme Corp", "CountryCode": "US"}
         },
     }
 
 
 # ---------------------------------------------------------------------------
-# Tests
+# Core workflow tests
 # ---------------------------------------------------------------------------
 
 class TestPartnerCentralToHubSpot:
+
     @patch("partner_central_to_hubspot.handler.get_partner_central_client")
     @patch("partner_central_to_hubspot.handler.HubSpotClient")
-    def test_accepts_invitation_and_creates_deal(
-        self, MockHubSpot, mock_pc_client,
-        pending_invitation, invitation_detail, full_opportunity
+    def test_accepts_via_correct_api_method(
+        self, MockHubSpot, mock_pc_factory,
+        pending_invitation, inv_detail, task_response_complete, full_opportunity
     ):
-        """Pending invitations should be accepted and synced to HubSpot."""
+        """
+        CRITICAL: Must call start_engagement_by_accepting_invitation_task,
+        NOT accept_engagement_invitation (which does not exist in the API).
+        """
         mock_hs = MockHubSpot.return_value
-        mock_hs.search_deals_by_aws_opportunity_id.return_value = []
-        mock_hs.create_deal.return_value = {"id": "hs-deal-001"}
+        mock_hs.search_deals_by_aws_invitation_id.return_value = []
+        mock_hs.create_deal.return_value = {"id": "hs-001"}
 
-        mock_pc = mock_pc_client.return_value
+        mock_pc = mock_pc_factory.return_value
         mock_pc.list_engagement_invitations.return_value = {
-            "EngagementInvitationSummaries": [pending_invitation],
-            "NextToken": None,
+            "EngagementInvitationSummaries": [pending_invitation]
         }
-        mock_pc.get_engagement_invitation.return_value = invitation_detail
-        mock_pc.accept_engagement_invitation.return_value = {}
+        mock_pc.get_engagement_invitation.return_value = inv_detail
+        mock_pc.start_engagement_by_accepting_invitation_task.return_value = task_response_complete
         mock_pc.get_opportunity.return_value = full_opportunity
 
         from partner_central_to_hubspot.handler import lambda_handler
+        lambda_handler({}, None)
 
+        mock_pc.start_engagement_by_accepting_invitation_task.assert_called_once()
+        # The old wrong method should never be called
+        assert not hasattr(mock_pc, "accept_engagement_invitation") or \
+               not mock_pc.accept_engagement_invitation.called
+
+    @patch("partner_central_to_hubspot.handler.get_partner_central_client")
+    @patch("partner_central_to_hubspot.handler.HubSpotClient")
+    def test_creates_hubspot_deal_after_acceptance(
+        self, MockHubSpot, mock_pc_factory,
+        pending_invitation, inv_detail, task_response_complete, full_opportunity
+    ):
+        mock_hs = MockHubSpot.return_value
+        mock_hs.search_deals_by_aws_invitation_id.return_value = []
+        mock_hs.create_deal.return_value = {"id": "hs-deal-001"}
+
+        mock_pc = mock_pc_factory.return_value
+        mock_pc.list_engagement_invitations.return_value = {
+            "EngagementInvitationSummaries": [pending_invitation]
+        }
+        mock_pc.get_engagement_invitation.return_value = inv_detail
+        mock_pc.start_engagement_by_accepting_invitation_task.return_value = task_response_complete
+        mock_pc.get_opportunity.return_value = full_opportunity
+
+        from partner_central_to_hubspot.handler import lambda_handler
         result = lambda_handler({}, None)
         body = json.loads(result["body"])
 
         assert result["statusCode"] == 200
         assert body["invitationsProcessed"] == 1
         assert body["results"][0]["hubspotDealId"] == "hs-deal-001"
-        assert body["results"][0]["partnerCentralOpportunityId"] == "opp-xyz789"
-
-        mock_pc.accept_engagement_invitation.assert_called_once_with(
-            Catalog="AWS",
-            Identifier="inv-abc123",
-        )
+        assert body["results"][0]["partnerCentralOpportunityId"] == "O7654321"
         mock_hs.create_deal.assert_called_once()
 
     @patch("partner_central_to_hubspot.handler.get_partner_central_client")
     @patch("partner_central_to_hubspot.handler.HubSpotClient")
-    def test_skips_already_processed_invitation(
-        self, MockHubSpot, mock_pc_client, pending_invitation
+    def test_deal_has_aws_tag_in_name(
+        self, MockHubSpot, mock_pc_factory,
+        pending_invitation, inv_detail, task_response_complete, full_opportunity
     ):
-        """An invitation already synced to HubSpot should not be reprocessed."""
         mock_hs = MockHubSpot.return_value
-        mock_hs.search_deals_by_aws_opportunity_id.return_value = [{"id": "existing-deal"}]
+        mock_hs.search_deals_by_aws_invitation_id.return_value = []
+        mock_hs.create_deal.return_value = {"id": "hs-002"}
 
-        mock_pc = mock_pc_client.return_value
+        mock_pc = mock_pc_factory.return_value
         mock_pc.list_engagement_invitations.return_value = {
-            "EngagementInvitationSummaries": [pending_invitation],
-            "NextToken": None,
+            "EngagementInvitationSummaries": [pending_invitation]
         }
-
-        from partner_central_to_hubspot.handler import lambda_handler
-
-        result = lambda_handler({}, None)
-        body = json.loads(result["body"])
-
-        assert body["invitationsProcessed"] == 0
-        mock_pc.accept_engagement_invitation.assert_not_called()
-        mock_hs.create_deal.assert_not_called()
-
-    @patch("partner_central_to_hubspot.handler.get_partner_central_client")
-    @patch("partner_central_to_hubspot.handler.HubSpotClient")
-    def test_deal_name_includes_aws_tag(
-        self, MockHubSpot, mock_pc_client,
-        pending_invitation, invitation_detail, full_opportunity
-    ):
-        """Created HubSpot deal name should include #AWS tag."""
-        mock_hs = MockHubSpot.return_value
-        mock_hs.search_deals_by_aws_opportunity_id.return_value = []
-        mock_hs.create_deal.return_value = {"id": "hs-deal-002"}
-
-        mock_pc = mock_pc_client.return_value
-        mock_pc.list_engagement_invitations.return_value = {
-            "EngagementInvitationSummaries": [pending_invitation],
-        }
-        mock_pc.get_engagement_invitation.return_value = invitation_detail
-        mock_pc.accept_engagement_invitation.return_value = {}
+        mock_pc.get_engagement_invitation.return_value = inv_detail
+        mock_pc.start_engagement_by_accepting_invitation_task.return_value = task_response_complete
         mock_pc.get_opportunity.return_value = full_opportunity
 
         from partner_central_to_hubspot.handler import lambda_handler
         lambda_handler({}, None)
 
-        created_properties = mock_hs.create_deal.call_args[0][0]
-        assert "#AWS" in created_properties["dealname"]
+        created_props = mock_hs.create_deal.call_args[0][0]
+        assert "#AWS" in created_props["dealname"]
 
     @patch("partner_central_to_hubspot.handler.get_partner_central_client")
     @patch("partner_central_to_hubspot.handler.HubSpotClient")
-    def test_no_invitations_returns_zero(self, MockHubSpot, mock_pc_client):
-        """When there are no pending invitations, nothing should be processed."""
-        mock_pc = mock_pc_client.return_value
+    def test_canonical_title_stored_separately(
+        self, MockHubSpot, mock_pc_factory,
+        pending_invitation, inv_detail, task_response_complete, full_opportunity
+    ):
+        """aws_opportunity_title must store the raw PC title (without #AWS)."""
+        mock_hs = MockHubSpot.return_value
+        mock_hs.search_deals_by_aws_invitation_id.return_value = []
+        mock_hs.create_deal.return_value = {"id": "hs-003"}
+
+        mock_pc = mock_pc_factory.return_value
         mock_pc.list_engagement_invitations.return_value = {
-            "EngagementInvitationSummaries": [],
+            "EngagementInvitationSummaries": [pending_invitation]
+        }
+        mock_pc.get_engagement_invitation.return_value = inv_detail
+        mock_pc.start_engagement_by_accepting_invitation_task.return_value = task_response_complete
+        mock_pc.get_opportunity.return_value = full_opportunity
+
+        from partner_central_to_hubspot.handler import lambda_handler
+        lambda_handler({}, None)
+
+        created_props = mock_hs.create_deal.call_args[0][0]
+        # dealname has #AWS; aws_opportunity_title has the raw title
+        assert created_props["aws_opportunity_title"] == "Enterprise Cloud Migration"
+
+    @patch("partner_central_to_hubspot.handler.get_partner_central_client")
+    @patch("partner_central_to_hubspot.handler.HubSpotClient")
+    def test_skips_already_processed_invitation(
+        self, MockHubSpot, mock_pc_factory, pending_invitation
+    ):
+        mock_hs = MockHubSpot.return_value
+        mock_hs.search_deals_by_aws_invitation_id.return_value = [{"id": "existing"}]
+
+        mock_pc = mock_pc_factory.return_value
+        mock_pc.list_engagement_invitations.return_value = {
+            "EngagementInvitationSummaries": [pending_invitation]
         }
 
         from partner_central_to_hubspot.handler import lambda_handler
+        result = lambda_handler({}, None)
+        body = json.loads(result["body"])
 
+        assert body["invitationsProcessed"] == 0
+        mock_pc.start_engagement_by_accepting_invitation_task.assert_not_called()
+        mock_hs.create_deal.assert_not_called()
+
+    @patch("partner_central_to_hubspot.handler.get_partner_central_client")
+    @patch("partner_central_to_hubspot.handler.HubSpotClient")
+    def test_polls_task_when_pending(
+        self, MockHubSpot, mock_pc_factory,
+        pending_invitation, inv_detail, full_opportunity
+    ):
+        """When task returns IN_PROGRESS, it should poll until COMPLETE."""
+        mock_hs = MockHubSpot.return_value
+        mock_hs.search_deals_by_aws_invitation_id.return_value = []
+        mock_hs.create_deal.return_value = {"id": "hs-004"}
+
+        mock_pc = mock_pc_factory.return_value
+        mock_pc.list_engagement_invitations.return_value = {
+            "EngagementInvitationSummaries": [pending_invitation]
+        }
+        mock_pc.get_engagement_invitation.return_value = inv_detail
+        # First call: IN_PROGRESS; second call: COMPLETE
+        mock_pc.start_engagement_by_accepting_invitation_task.return_value = {
+            "TaskId": "task-pending",
+            "TaskStatus": "IN_PROGRESS",
+            "OpportunityId": None,
+        }
+        mock_pc.get_engagement_by_accepting_invitation_task.side_effect = [
+            {"TaskStatus": "IN_PROGRESS", "OpportunityId": None},
+            {"TaskStatus": "COMPLETE", "OpportunityId": "O7654321"},
+        ]
+        mock_pc.get_opportunity.return_value = full_opportunity
+
+        from partner_central_to_hubspot.handler import lambda_handler
+        with patch("partner_central_to_hubspot.handler.time.sleep"):
+            result = lambda_handler({}, None)
+
+        body = json.loads(result["body"])
+        assert body["invitationsProcessed"] == 1
+        assert mock_pc.get_engagement_by_accepting_invitation_task.call_count == 2
+
+    @patch("partner_central_to_hubspot.handler.get_partner_central_client")
+    @patch("partner_central_to_hubspot.handler.HubSpotClient")
+    def test_no_invitations_returns_zero(self, MockHubSpot, mock_pc_factory):
+        mock_pc = mock_pc_factory.return_value
+        mock_pc.list_engagement_invitations.return_value = {
+            "EngagementInvitationSummaries": []
+        }
+
+        from partner_central_to_hubspot.handler import lambda_handler
         result = lambda_handler({}, None)
         body = json.loads(result["body"])
 
@@ -172,42 +253,46 @@ class TestPartnerCentralToHubSpot:
 
     @patch("partner_central_to_hubspot.handler.get_partner_central_client")
     @patch("partner_central_to_hubspot.handler.HubSpotClient")
-    def test_handles_partial_errors_gracefully(
-        self, MockHubSpot, mock_pc_client, pending_invitation
+    def test_partial_errors_do_not_abort_batch(
+        self, MockHubSpot, mock_pc_factory, full_opportunity
     ):
-        """A failure on one invitation should not abort others."""
-        inv2 = {**pending_invitation, "Id": "inv-def456"}
+        """One failing invitation must not prevent others from being processed."""
+        inv1 = {
+            "Id": "arn:.../engi-fail001",
+            "Status": "PENDING",
+        }
+        inv2 = {
+            "Id": "arn:.../engi-ok002",
+            "Status": "PENDING",
+        }
 
         mock_hs = MockHubSpot.return_value
-        mock_hs.search_deals_by_aws_opportunity_id.return_value = []
+        mock_hs.search_deals_by_aws_invitation_id.return_value = []
+        mock_hs.create_deal.return_value = {"id": "hs-005"}
 
-        mock_pc = mock_pc_client.return_value
+        mock_pc = mock_pc_factory.return_value
         mock_pc.list_engagement_invitations.return_value = {
-            "EngagementInvitationSummaries": [pending_invitation, inv2],
+            "EngagementInvitationSummaries": [inv1, inv2]
         }
-        # First invitation raises an error
+        # First invitation's get_engagement_invitation raises an error
         mock_pc.get_engagement_invitation.side_effect = [
-            Exception("PC API error"),
+            Exception("Simulated API error"),
             {
-                "Id": "inv-def456",
+                "Id": inv2["Id"],
+                "PayloadType": "OpportunityInvitation",
                 "Payload": {
                     "OpportunityInvitation": {
-                        "OpportunitySummary": {"Id": "opp-2"}
+                        "OpportunitySummary": {"Id": "O7654321"}
                     }
                 },
             },
         ]
-        mock_pc.accept_engagement_invitation.return_value = {}
-        mock_pc.get_opportunity.return_value = {
-            "Id": "opp-2", "Arn": "arn:aws:partnercentral:::opp-2",
-            "Project": {"Title": "Test #AWS", "Stage": "Prospect"},
-            "LifeCycle": {"Stage": "Prospect", "TargetCloseDate": "2025-12-31"},
-            "Customer": {"Account": {"CompanyName": "Test"}},
+        mock_pc.start_engagement_by_accepting_invitation_task.return_value = {
+            "TaskId": "t1", "TaskStatus": "COMPLETE", "OpportunityId": "O7654321"
         }
-        mock_hs.create_deal.return_value = {"id": "hs-999"}
+        mock_pc.get_opportunity.return_value = full_opportunity
 
         from partner_central_to_hubspot.handler import lambda_handler
-
         result = lambda_handler({}, None)
         body = json.loads(result["body"])
 

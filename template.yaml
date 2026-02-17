@@ -28,6 +28,14 @@ Parameters:
       Full ARN of the HubSpotPartnerCentralServiceRole. Leave blank to
       auto-construct from the deploying account ID.
 
+  PartnerCentralSolutionId:
+    Type: String
+    Default: ""
+    Description: >
+      The Partner Central Solution ID (e.g. S-0000001) to associate with each
+      newly created opportunity. Required for opportunities to be submitted to AWS.
+      Run ListSolutions in Partner Central to find your solution ID.
+
   InvitationPollIntervalMinutes:
     Type: Number
     Default: 5
@@ -54,6 +62,7 @@ Globals:
         HUBSPOT_ACCESS_TOKEN: !Ref HubSpotAccessToken
         HUBSPOT_WEBHOOK_SECRET: !Ref HubSpotWebhookSecret
         PARTNER_CENTRAL_ROLE_ARN: !Ref PartnerCentralRoleArn
+        PARTNER_CENTRAL_SOLUTION_ID: !Ref PartnerCentralSolutionId
         ENVIRONMENT: !Ref Environment
         LOG_LEVEL: INFO
 
