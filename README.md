@@ -1,7 +1,10 @@
-# HubSpot ↔ AWS Partner Central Sync
+# HubSpot ↔ Cloud Partner Integrations
 
-Bidirectional integration between **HubSpot CRM** and **AWS Partner Central**, deployed as serverless AWS Lambda functions.
+Bidirectional integrations between **HubSpot CRM** and cloud partner platforms, deployed as serverless AWS Lambda functions.
 
+## Supported Integrations
+
+### AWS Partner Central
 ```
 HubSpot deal created          AWS Partner Central
   (title contains #AWS)  ──►  CreateOpportunity
@@ -14,6 +17,21 @@ AWS EngagementInvitation  ──►  AcceptEngagementInvitation
                                       ▼
                                HubSpot deal created
                                (with #AWS in title)
+```
+
+### Google Cloud Partners
+```
+HubSpot deal created          GCP Partners API
+  (title contains #GCP)  ──►  CreateLead → CreateOpportunity
+                                     │
+                                     ▼
+HubSpot deal updated   ◄──  GCP Opportunity ID written back
+
+GCP Opportunity          ──►  Sync to HubSpot
+  (scheduled poll)                   │
+                                     ▼
+                              HubSpot deal created
+                              (with #GCP in title)
 ```
 
 > **📖 New to this integration?** See [BUILD.md](./BUILD.md) for complete step-by-step installation instructions.
@@ -36,13 +54,28 @@ AWS EngagementInvitation  ──►  AcceptEngagementInvitation
 
 ## Architecture
 
+### AWS Partner Central Integration
+
 | Component | Purpose |
 |-----------|---------|
 | **`HubSpotToPartnerCentralFunction`** | API Gateway webhook receiver. Triggered by HubSpot on `deal.creation`. Filters for `#AWS` in the deal name, then calls `CreateOpportunity` on Partner Central. Writes the PC Opportunity ID back to the HubSpot deal. |
 | **`PartnerCentralToHubSpotFunction`** | EventBridge-scheduled Lambda (default: every 5 minutes). Lists `PENDING` EngagementInvitations, accepts each one, fetches the opportunity details, and creates a corresponding HubSpot deal. |
 | **`HubSpotPartnerCentralServiceRole`** | IAM role assumed by both Lambdas for all Partner Central API calls. Defined in `infra/iam-role.yaml`. |
-| **API Gateway** | Regional REST API that exposes the webhook endpoint to HubSpot. |
-| **SSM Parameter Store** | Stores the HubSpot access token as a SecureString. |
+
+### Google Cloud Partners Integration
+
+| Component | Purpose |
+|-----------|---------|
+| **`HubSpotToGcpPartnersFunction`** | API Gateway webhook receiver at `/webhook/hubspot/gcp`. Triggered by HubSpot on `deal.creation`. Filters for `#GCP` in the deal name, creates a Lead and then an Opportunity in GCP Partners API. Writes the GCP Opportunity ID back to HubSpot. |
+| **`GcpPartnersToHubSpotFunction`** | EventBridge-scheduled Lambda (default: every 15 minutes). Lists opportunities from GCP Partners API and syncs them to HubSpot deals. Skips opportunities that originated from HubSpot to avoid circular sync. |
+
+### Shared Components
+
+| Component | Purpose |
+|-----------|---------|
+| **API Gateway** | Regional REST API that exposes webhook endpoints to HubSpot for both AWS and GCP integrations. |
+| **SSM Parameter Store** | Stores the HubSpot access token and GCP service account key as SecureStrings. |
+| **CloudWatch Logs** | Stores Lambda execution logs with 30-day retention for debugging and auditing. |
 
 ---
 
@@ -51,8 +84,17 @@ AWS EngagementInvitation  ──►  AcceptEngagementInvitation
 - **AWS CLI** ≥ 2.x configured with an account that has permission to create IAM roles and Lambda functions
 - **AWS SAM CLI** ≥ 1.100 (`pip install aws-sam-cli`)
 - **Python** 3.12
-- A **HubSpot Private App** with scopes: `crm.objects.deals.read`, `crm.objects.deals.write`, `crm.schemas.deals.write`
+- A **HubSpot Private App** with scopes: `crm.objects.deals.read`, `crm.objects.deals.write`, `crm.schemas.deals.write`, `crm.objects.contacts.read`, `crm.objects.contacts.write`
+
+### For AWS Partner Central Integration
 - An active **AWS Partner Central** enrollment
+- AWS Partner Central Solution ID (optional, for automatic solution association)
+
+### For Google Cloud Partners Integration
+- An active **Google Cloud Partner** account
+- Google Cloud Partner ID from the Partners Portal
+- A GCP service account with Cloud CRM Partners API permissions
+- Service account JSON key file
 
 ---
 
@@ -92,19 +134,49 @@ sam deploy --guided \
 You will be prompted for:
 - `HubSpotAccessToken` — your HubSpot Private App token (`pat-na1-...`)
 - `HubSpotWebhookSecret` — optional but strongly recommended
+- `GcpPartnerId` — your Google Cloud Partner ID (leave blank if not using GCP integration)
+- `GcpServiceAccountKey` — Base64-encoded GCP service account JSON key (leave blank if not using GCP integration)
 
-### Step 3 — Register the HubSpot Webhook
+#### Optional: Deploy with GCP Parameters
+
+If you want to enable both AWS and GCP integrations:
+
+```bash
+# Encode your GCP service account key
+GCP_KEY_BASE64=$(base64 -w 0 path/to/gcp-service-account-key.json)
+
+sam deploy --guided \
+  --parameter-overrides \
+    "PartnerCentralRoleArn=$ROLE_ARN" \
+    "GcpPartnerId=12345" \
+    "GcpServiceAccountKey=$GCP_KEY_BASE64"
+```
+
+### Step 3 — Register HubSpot Webhooks
+
+#### For AWS Partner Central Integration
 
 1. Copy the **WebhookUrl** from the SAM deploy output.
 2. In HubSpot: **Settings → Integrations → Private Apps → Your App → Webhooks**
 3. Create a subscription:
    - **Event type**: `deal.creation`
-   - **Target URL**: the WebhookUrl from Step 2
+   - **Target URL**: the WebhookUrl from Step 2 (e.g., `https://xyz.execute-api.us-east-1.amazonaws.com/production/webhook/hubspot`)
 4. Enable the subscription.
+
+#### For Google Cloud Partners Integration
+
+1. Copy the **GcpWebhookUrl** from the SAM deploy output.
+2. In HubSpot: **Settings → Integrations → Private Apps → Your App → Webhooks**
+3. Create a subscription:
+   - **Event type**: `deal.creation`
+   - **Target URL**: the GcpWebhookUrl from Step 2 (e.g., `https://xyz.execute-api.us-east-1.amazonaws.com/production/webhook/hubspot/gcp`)
+4. Enable the subscription.
+
+> **Note**: You can have both webhooks active simultaneously. The AWS webhook will process deals with `#AWS` tag, and the GCP webhook will process deals with `#GCP` tag.
 
 ### Step 4 — Create HubSpot Custom Properties (one-time)
 
-The integration stores AWS metadata on HubSpot deals. Run this once:
+The integration stores cloud partner metadata on HubSpot deals. Run this once:
 
 ```python
 from src.common.hubspot_client import HubSpotClient
@@ -112,6 +184,11 @@ import os
 
 os.environ["HUBSPOT_ACCESS_TOKEN"] = "pat-na1-your-token"
 client = HubSpotClient()
+
+# This will create properties for both AWS and GCP integrations
+# Properties with names like:
+# - aws_opportunity_id, aws_opportunity_title, aws_sync_status, aws_review_status
+# - gcp_opportunity_id, gcp_opportunity_name, gcp_sync_status, gcp_lead_name, gcp_product_family
 created = client.create_custom_properties()
 print(f"Created properties: {created}")
 ```
@@ -122,7 +199,9 @@ Or trigger it manually — the Lambda will handle errors gracefully if propertie
 
 ## How It Works
 
-### HubSpot → Partner Central
+### AWS Integration
+
+#### HubSpot → AWS Partner Central
 
 1. A sales rep creates a HubSpot deal with **`#AWS`** anywhere in the deal name (e.g., `"BigCorp Cloud Migration #AWS"`).
 2. HubSpot fires a `deal.creation` webhook to the API Gateway endpoint.
@@ -140,7 +219,7 @@ Or trigger it manually — the Lambda will handle errors gracefully if propertie
 4. The Partner Central opportunity ID is written back to the HubSpot deal's `aws_opportunity_id` property.
 5. Subsequent duplicate events are detected and skipped via the `aws_opportunity_id` check.
 
-### Partner Central → HubSpot
+#### AWS Partner Central → HubSpot
 
 1. EventBridge triggers the sync Lambda every 5 minutes (configurable).
 2. The Lambda assumes `HubSpotPartnerCentralServiceRole` and calls `ListEngagementInvitations` for all `PENDING` invitations.
@@ -150,6 +229,48 @@ Or trigger it manually — the Lambda will handle errors gracefully if propertie
    - Calls `GetOpportunity` to fetch full details.
    - Creates a HubSpot deal with the opportunity data (deal name automatically includes `#AWS`).
    - Stores the `aws_invitation_id` and `aws_opportunity_id` on the deal to prevent reprocessing.
+
+### Google Cloud Partners Integration
+
+#### HubSpot → GCP Partners
+
+1. A sales rep creates a HubSpot deal with **`#GCP`** anywhere in the deal name (e.g., `"Enterprise Workspace Migration #GCP"`).
+2. HubSpot fires a `deal.creation` webhook to the GCP-specific API Gateway endpoint (`/webhook/hubspot/gcp`).
+3. The Lambda fetches the full deal, confirms the `#GCP` tag, and performs a two-step creation:
+   
+   **Step 1: Create Lead**
+   | HubSpot Field | GCP Lead Field |
+   |---|---|
+   | `company.name` | `companyName` |
+   | `company.website` | `companyWebsite` |
+   | `contact.firstname/lastname` | `contact.givenName/familyName` |
+   | `contact.email` | `contact.email` |
+   | `description` | `notes` |
+   | `deal.id` | `externalSystemId` |
+
+   **Step 2: Create Opportunity (linked to Lead)**
+   | HubSpot Field | GCP Opportunity Field |
+   |---|---|
+   | `dealstage` | `salesStage` (QUALIFYING, QUALIFIED, PROPOSAL, etc.) |
+   | `amount` | `dealSize` |
+   | `closedate` | `closeDate` (year/month/day object) |
+   | `gcp_product_family` | `productFamily` (GOOGLE_CLOUD_PLATFORM, GOOGLE_WORKSPACE, etc.) |
+   | `description` | `notes` |
+   | `hs_next_step` | `nextSteps` |
+
+4. The GCP opportunity ID and name are written back to the HubSpot deal's `gcp_opportunity_id` and `gcp_opportunity_name` properties.
+5. Subsequent duplicate events are detected and skipped via the `gcp_opportunity_id` check.
+
+#### GCP Partners → HubSpot
+
+1. EventBridge triggers the sync Lambda every 15 minutes (configurable).
+2. The Lambda calls GCP Partners API `list_opportunities` to fetch all opportunities.
+3. For each opportunity:
+   - Skips opportunities with `externalSystemId` starting with `hubspot-deal-` (originated from HubSpot).
+   - Fetches the associated Lead for company information.
+   - Creates or updates a HubSpot deal with the opportunity data (deal name automatically includes `#GCP`).
+   - Stores the `gcp_opportunity_id` and `gcp_opportunity_name` on the deal.
+   - Associates contacts from the Lead if available.
 
 ---
 
