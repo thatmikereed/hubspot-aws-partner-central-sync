@@ -34,6 +34,21 @@ GCP Opportunity          ──►  Sync to HubSpot
                               (with #GCP in title)
 ```
 
+### Microsoft Partner Center
+```
+HubSpot deal created          Microsoft Partner Center
+  (title contains #Microsoft)  ──►  CreateReferral
+                                      │
+                                      ▼
+HubSpot deal updated   ◄──  Referral ID written back
+
+Microsoft Referral       ──►  Sync to HubSpot
+  (scheduled poll)                   │
+  (New/Active status)                ▼
+                              HubSpot deal created
+                              (with #Microsoft in title)
+```
+
 > **📖 New to this integration?** See [BUILD.md](./BUILD.md) for complete step-by-step installation instructions.
 
 ## Table of Contents
@@ -79,8 +94,8 @@ GCP Opportunity          ──►  Sync to HubSpot
 
 | Component | Purpose |
 |-----------|---------|
-| **API Gateway** | Regional REST API that exposes webhook endpoints to HubSpot for both AWS and GCP integrations. |
-| **SSM Parameter Store** | Stores the HubSpot access token and GCP service account key as SecureStrings. |
+| **API Gateway** | Regional REST API that exposes webhook endpoints to HubSpot for AWS, GCP, and Microsoft integrations. |
+| **SSM Parameter Store** | Stores the HubSpot access token, GCP service account key, and Microsoft access token as SecureStrings. |
 | **CloudWatch Logs** | Stores Lambda execution logs with 30-day retention for debugging and auditing. |
 
 ---
@@ -101,6 +116,12 @@ GCP Opportunity          ──►  Sync to HubSpot
 - Google Cloud Partner ID from the Partners Portal
 - A GCP service account with Cloud CRM Partners API permissions
 - Service account JSON key file
+
+### For Microsoft Partner Center Integration
+- An active **Microsoft Partner Center** account
+- Azure AD App Registration with Partner Center API permissions
+- Azure AD access token with Referral Admin or Referral User role
+- Admin consent granted for the application
 
 ---
 
@@ -290,7 +311,18 @@ If you want to sync with Microsoft Partner Center in addition to AWS:
 4. The Microsoft referral ID is written back to `microsoft_referral_id` custom property.
 5. Status tracking via `microsoft_status`, `microsoft_substatus`, and `microsoft_sync_status` properties.
 
-### Partner Central → HubSpot
+#### Microsoft Partner Center → HubSpot
+
+1. EventBridge triggers the sync Lambda every 15 minutes (configurable).
+2. The Lambda calls Microsoft Partner Center API to list referrals with status "New" or "Active".
+3. For each referral:
+   - Searches HubSpot for an existing deal with the matching `microsoft_referral_id`.
+   - If not found, creates a new HubSpot deal (deal name automatically includes `#Microsoft`).
+   - If found and status changed, updates the deal stage to reflect current Microsoft status.
+   - Writes `microsoft_referral_id`, `microsoft_status`, `microsoft_substatus`, and `microsoft_sync_status` to the deal.
+   - Skips closed referrals to prevent reopening completed deals.
+
+### AWS Partner Central → HubSpot
 
 1. EventBridge triggers the sync Lambda every 5 minutes (configurable).
 2. The Lambda assumes `HubSpotPartnerCentralServiceRole` and calls `ListEngagementInvitations` for all `PENDING` invitations.
