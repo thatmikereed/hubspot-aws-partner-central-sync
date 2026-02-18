@@ -1,6 +1,6 @@
-# HubSpot ↔ Cloud Partner Integrations
+# HubSpot ↔ AWS Partner Central & Microsoft Partner Center Sync
 
-Bidirectional integrations between **HubSpot CRM** and cloud partner platforms, deployed as serverless AWS Lambda functions.
+Bidirectional integration between **HubSpot CRM**, **AWS Partner Central**, and **Microsoft Partner Center**, deployed as serverless AWS Lambda functions.
 
 ## Supported Integrations
 
@@ -68,6 +68,12 @@ GCP Opportunity          ──►  Sync to HubSpot
 |-----------|---------|
 | **`HubSpotToGcpPartnersFunction`** | API Gateway webhook receiver at `/webhook/hubspot/gcp`. Triggered by HubSpot on `deal.creation`. Filters for `#GCP` in the deal name, creates a Lead and then an Opportunity in GCP Partners API. Writes the GCP Opportunity ID back to HubSpot. |
 | **`GcpPartnersToHubSpotFunction`** | EventBridge-scheduled Lambda (default: every 15 minutes). Lists opportunities from GCP Partners API and syncs them to HubSpot deals. Skips opportunities that originated from HubSpot to avoid circular sync. |
+### Microsoft Partner Center Integration
+
+| Component | Purpose |
+|-----------|---------|
+| **`HubSpotToMicrosoftFunction`** | API Gateway webhook receiver. Triggered by HubSpot on `deal.creation`. Filters for `#Microsoft` in the deal name, then calls `CreateReferral` on Microsoft Partner Center. Writes the Referral ID back to the HubSpot deal. |
+| **`MicrosoftToHubSpotFunction`** | EventBridge-scheduled Lambda (default: every 15 minutes). Lists New and Active referrals from Microsoft Partner Center and syncs them to HubSpot deals. |
 
 ### Shared Components
 
@@ -195,6 +201,52 @@ print(f"Created properties: {created}")
 
 Or trigger it manually — the Lambda will handle errors gracefully if properties already exist.
 
+### Enabling Microsoft Partner Center Integration (Optional)
+
+If you want to sync with Microsoft Partner Center in addition to AWS:
+
+1. **Set up Azure AD App Registration:**
+   - Go to Azure Portal → Azure Active Directory → App registrations
+   - Create a new app registration
+   - Add API permissions: Partner Center API (delegated permissions)
+   - Grant admin consent for your organization
+   - Generate a client secret
+
+2. **Obtain Access Token:**
+   - Use OAuth 2.0 authorization code flow or device code flow
+   - Get an access token with Partner Center API scope
+   - The token must have Referral Admin or Referral User role
+
+3. **Update SAM deployment:**
+   ```bash
+   sam deploy \
+     --parameter-overrides \
+       "PartnerCentralRoleArn=$ROLE_ARN" \
+       "MicrosoftAccessToken=your-microsoft-token"
+   ```
+
+4. **Register Microsoft webhook in HubSpot:**
+   - Copy the **MicrosoftWebhookUrl** from SAM output
+   - In HubSpot: Settings → Integrations → Private Apps → Webhooks
+   - Create subscription for `deal.creation` pointing to MicrosoftWebhookUrl
+
+5. **Create Microsoft-specific HubSpot properties:**
+   ```python
+   from src.common.microsoft_mappers import get_hubspot_custom_properties_for_microsoft
+   from src.common.hubspot_client import HubSpotClient
+   
+   client = HubSpotClient()
+   props = get_hubspot_custom_properties_for_microsoft()
+   for prop in props:
+       try:
+           client.session.post(
+               f"{client.base_url}/crm/v3/properties/deals",
+               json=prop
+           )
+       except Exception as e:
+           print(f"Property {prop['name']} may already exist: {e}")
+   ```
+
 ---
 
 ## How It Works
@@ -220,6 +272,25 @@ Or trigger it manually — the Lambda will handle errors gracefully if propertie
 5. Subsequent duplicate events are detected and skipped via the `aws_opportunity_id` check.
 
 #### AWS Partner Central → HubSpot
+### HubSpot → Microsoft Partner Center
+
+1. A sales rep creates a HubSpot deal with **`#Microsoft`** anywhere in the deal name (e.g., `"Contoso Azure Migration #Microsoft"`).
+2. HubSpot fires a `deal.creation` webhook to the Microsoft webhook endpoint.
+3. The Lambda maps HubSpot fields to Microsoft Partner Center referral format:
+
+| HubSpot Field | Microsoft Partner Center Field |
+|---|---|
+| `dealname` | `name` |
+| `description` | `details.notes` |
+| `dealstage` | `status` + `substatus` |
+| `closedate` | `details.closeDate` |
+| `amount` | `details.dealValue` |
+| `deal.id` | `externalReferenceId` |
+
+4. The Microsoft referral ID is written back to `microsoft_referral_id` custom property.
+5. Status tracking via `microsoft_status`, `microsoft_substatus`, and `microsoft_sync_status` properties.
+
+### Partner Central → HubSpot
 
 1. EventBridge triggers the sync Lambda every 5 minutes (configurable).
 2. The Lambda assumes `HubSpotPartnerCentralServiceRole` and calls `ListEngagementInvitations` for all `PENDING` invitations.
@@ -317,22 +388,30 @@ sam local invoke HubSpotToPartnerCentralFunction \
 ```
 .
 ├── infra/
-│   └── iam-role.yaml                    # IAM role CloudFormation template (deploy first)
+│   └── iam-role.yaml                        # IAM role CloudFormation template (deploy first)
 ├── src/
 │   ├── common/
-│   │   ├── aws_client.py                # Role assumption + Partner Central client factory
-│   │   ├── hubspot_client.py            # HubSpot CRM API wrapper
-│   │   └── mappers.py                   # Bidirectional field mapping
+│   │   ├── aws_client.py                    # Role assumption + Partner Central client factory
+│   │   ├── microsoft_client.py              # Microsoft Partner Center API client
+│   │   ├── hubspot_client.py                # HubSpot CRM API wrapper
+│   │   ├── mappers.py                       # AWS Partner Central field mapping
+│   │   └── microsoft_mappers.py             # Microsoft Partner Center field mapping
 │   ├── hubspot_to_partner_central/
-│   │   └── handler.py                   # Lambda: HubSpot webhook → PC CreateOpportunity
-│   └── partner_central_to_hubspot/
-│       └── handler.py                   # Lambda: scheduled PC invitation poll → HubSpot deal
+│   │   └── handler.py                       # Lambda: HubSpot webhook → AWS PC CreateOpportunity
+│   ├── partner_central_to_hubspot/
+│   │   └── handler.py                       # Lambda: scheduled AWS PC invitation poll → HubSpot
+│   ├── hubspot_to_microsoft/
+│   │   └── handler.py                       # Lambda: HubSpot webhook → Microsoft PC CreateReferral
+│   └── microsoft_to_hubspot/
+│       └── handler.py                       # Lambda: scheduled Microsoft PC referral poll → HubSpot
 ├── tests/
 │   ├── conftest.py
 │   ├── test_hubspot_to_partner_central.py
 │   ├── test_partner_central_to_hubspot.py
-│   └── test_mappers.py
-├── template.yaml                        # AWS SAM / CloudFormation template
+│   ├── test_mappers.py
+│   ├── test_microsoft_client.py
+│   └── test_microsoft_mappers.py
+├── template.yaml                            # AWS SAM / CloudFormation template
 ├── samconfig.toml                       # SAM deployment configuration
 ├── requirements.txt                     # Lambda runtime dependencies
 ├── requirements-dev.txt                 # Development / test dependencies
@@ -343,12 +422,22 @@ sam local invoke HubSpotToPartnerCentralFunction \
 
 ## Security Notes
 
+### AWS Partner Central
 - The HubSpot access token is stored in **SSM Parameter Store** (SecureString) and injected as an environment variable — never hardcoded.
 - Webhook requests are verified using HubSpot's HMAC-SHA256 signature scheme when `HUBSPOT_WEBHOOK_SECRET` is set.
 - The `HubSpotPartnerCentralServiceRole` uses an `ExternalId` condition (`HubSpotPartnerCentralIntegration`) to prevent confused-deputy attacks.
 - All Lambda functions log to CloudWatch with a 30-day retention policy. Sensitive data is redacted from logs.
 - No Partner Central credentials or tokens are stored — access is always via short-lived STS credentials from the assumed role.
+
+### Microsoft Partner Center
+- The Microsoft access token is stored in **SSM Parameter Store** (SecureString) and injected as an environment variable.
+- Microsoft Partner Center API uses Azure AD OAuth 2.0 authentication with delegated permissions.
+- Access tokens should be rotated regularly and should use the minimum required permissions (Referral User or Referral Admin).
+- API calls use HTTPS with TLS 1.2+ for encryption in transit.
+
+### General
 - All external inputs are validated and sanitized to prevent injection attacks.
+- Idempotency is enforced using unique identifiers (deal IDs, opportunity IDs, referral IDs) to prevent duplicate operations.
 
 **For detailed security information and best practices, see [SECURITY.md](./SECURITY.md).**
 
