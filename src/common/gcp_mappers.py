@@ -29,7 +29,15 @@ HUBSPOT_STAGE_TO_GCP: dict[str, str] = {
     "closedlost": "CLOSED_LOST",
 }
 
-GCP_STAGE_TO_HUBSPOT: dict[str, str] = {v: k for k, v in HUBSPOT_STAGE_TO_GCP.items()}
+# GCP to HubSpot mapping - handle multiple HubSpot stages mapping to same GCP stage
+GCP_STAGE_TO_HUBSPOT: dict[str, str] = {
+    "QUALIFYING": "appointmentscheduled",
+    "QUALIFIED": "qualifiedtobuy",
+    "PROPOSAL": "decisionmakerboughtin",
+    "NEGOTIATING": "contractsent",
+    "CLOSED_WON": "closedwon",
+    "CLOSED_LOST": "closedlost",
+}
 
 # ---------------------------------------------------------------------------
 # GCP Product Family enum values
@@ -197,13 +205,13 @@ def hubspot_deal_to_gcp_opportunity(
         "qualificationState": qualification_state,
         "productFamily": product_family,
         "externalSystemId": external_id,
+        "closeDate": close_date,  # Always include close date
     }
     
     if deal_size > 0:
         opportunity_payload["dealSize"] = deal_size
     
-    if close_date:
-        opportunity_payload["closeDate"] = close_date
+    # Close date is now already included above
     
     if term_months:
         opportunity_payload["termMonths"] = str(term_months)
@@ -389,20 +397,28 @@ def _sanitize_phone(raw: Optional[str]) -> Optional[str]:
     digits = "".join(c for c in raw if c.isdigit() or c == "+")
     if not digits.startswith("+"):
         digits = "+1" + digits  # Assume US if no country code
-    if len(digits) < 4 or len(digits) > 16:
+    # Must be at least 4 digits total (country code + number), max 16
+    # For US (+1), we need at least 10 digits after the country code
+    if len(digits) < 8 or len(digits) > 16:  # Changed from 4 to 8 minimum
         return None
     return digits
 
 
-def _parse_close_date(raw: Optional[str]) -> Optional[dict]:
+def _parse_close_date(raw: Optional[str]) -> dict:
     """
     Parse HubSpot close date to GCP date format.
     
     GCP expects date as: {"year": 2024, "month": 12, "day": 31}
-    Returns None if date is invalid or in the past.
+    Always returns a valid future date (never None).
     """
     if not raw:
-        return None
+        # Default to 90 days from today
+        future_date = date.today() + timedelta(days=90)
+        return {
+            "year": future_date.year,
+            "month": future_date.month,
+            "day": future_date.day,
+        }
     
     try:
         dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
