@@ -43,14 +43,16 @@ class HubSpotClient:
                 "aws_opportunity_id,aws_opportunity_arn,aws_opportunity_title,"
                 "aws_review_status,aws_sync_status,aws_invitation_id,"
                 "aws_industry,aws_delivery_models,aws_primary_needs,"
-                "aws_use_case,aws_expected_spend"
+                "aws_use_case,aws_expected_spend,aws_psm_name,aws_psm_email,aws_psm_phone"
             )
         }
         response = self.session.get(url, params=params)
         response.raise_for_status()
         return response.json()
 
-    def get_deal_with_associations(self, deal_id: str) -> tuple[dict, Optional[dict], list[dict]]:
+    def get_deal_with_associations(
+        self, deal_id: str
+    ) -> tuple[dict, Optional[dict], list[dict]]:
         """
         Fetch a deal plus its associated company and contacts.
 
@@ -108,10 +110,13 @@ class HubSpotClient:
         # 1. Create the note
         note_url = f"{HUBSPOT_API_BASE}/crm/v3/objects/notes"
         from datetime import datetime, timezone
+
         payload = {
             "properties": {
                 "hs_note_body": note_body,
-                "hs_timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "hs_timestamp": datetime.now(timezone.utc).strftime(
+                    "%Y-%m-%dT%H:%M:%SZ"
+                ),
             }
         }
         response = self.session.post(note_url, json=payload)
@@ -195,9 +200,7 @@ class HubSpotClient:
     def get_contact(self, contact_id: str) -> dict:
         """Fetch a contact by ID."""
         url = f"{HUBSPOT_API_BASE}/crm/v3/objects/contacts/{contact_id}"
-        params = {
-            "properties": "firstname,lastname,email,phone,mobilephone,jobtitle"
-        }
+        params = {"properties": "firstname,lastname,email,phone,mobilephone,jobtitle"}
         response = self.session.get(url, params=params)
         response.raise_for_status()
         return response.json()
@@ -206,7 +209,9 @@ class HubSpotClient:
     # Associations
     # ------------------------------------------------------------------
 
-    def _get_association_ids(self, object_id: str, from_type: str, to_type: str) -> list[str]:
+    def _get_association_ids(
+        self, object_id: str, from_type: str, to_type: str
+    ) -> list[str]:
         """Return a list of associated object IDs."""
         url = f"{HUBSPOT_API_BASE}/crm/v3/associations/{from_type}/{to_type}/batch/read"
         payload = {"inputs": [{"id": object_id}]}
@@ -218,7 +223,13 @@ class HubSpotClient:
                 return []
             return [assoc["id"] for assoc in results[0].get("to", [])]
         except (RequestException, HTTPError) as e:
-            logger.warning("Could not fetch %s→%s associations for %s: %s", from_type, to_type, object_id, e)
+            logger.warning(
+                "Could not fetch %s→%s associations for %s: %s",
+                from_type,
+                to_type,
+                object_id,
+                e,
+            )
             return []
 
     # ------------------------------------------------------------------
@@ -410,6 +421,30 @@ class HubSpotClient:
                     "If blank, solutions are auto-matched based on use case."
                 ),
             },
+            {
+                "name": "aws_psm_name",
+                "label": "AWS Partner Success Manager",
+                "type": "string",
+                "fieldType": "text",
+                "groupName": "dealinformation",
+                "description": "Name of the AWS Partner Success Manager (PSM) assigned to this opportunity",
+            },
+            {
+                "name": "aws_psm_email",
+                "label": "AWS PSM Email",
+                "type": "string",
+                "fieldType": "text",
+                "groupName": "dealinformation",
+                "description": "Email address of the AWS Partner Success Manager",
+            },
+            {
+                "name": "aws_psm_phone",
+                "label": "AWS PSM Phone",
+                "type": "string",
+                "fieldType": "text",
+                "groupName": "dealinformation",
+                "description": "Phone number of the AWS Partner Success Manager",
+            },
         ]
 
         url = f"{HUBSPOT_API_BASE}/crm/v3/properties/deals"
@@ -432,10 +467,10 @@ class HubSpotClient:
     # Webhook signature verification
     # ------------------------------------------------------------------
 
-    def verify_webhook_signature(self, payload: bytes, signature: str, secret: str) -> bool:
+    def verify_webhook_signature(
+        self, payload: bytes, signature: str, secret: str
+    ) -> bool:
         """Verify HubSpot webhook v3 HMAC-SHA256 signature."""
-        expected = hmac.new(
-            secret.encode("utf-8"), payload, hashlib.sha256
-        ).hexdigest()
+        expected = hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
         sig_clean = signature.lstrip("sha256=")
         return hmac.compare_digest(expected, sig_clean)
