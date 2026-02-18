@@ -136,8 +136,9 @@ def _search_solutions(query_params: dict) -> dict:
     - limit: Max results (default: 50, max: 100)
     
     Note: Partner Central ListSolutions doesn't support text search,
-    so we fetch solutions in batches and filter client-side. For large
-    solution catalogs, this may take a few seconds.
+    so we fetch solutions in batches and filter client-side. Search is
+    limited to the first 500 solutions (5 batches of 100) to prevent
+    excessive API calls. For large catalogs, this may take a few seconds.
     """
     query = query_params.get("q", "").lower()
     if not query:

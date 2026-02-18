@@ -24,7 +24,10 @@ Parameters:
   ResourceSyncInterval:
     Type: Number
     Default: 240
-    Description: How often (in minutes) to sync AWS resources (default 4 hours). Valid values are 1, 5, 10, 15, 30, or >= 60.
+    Description: How often (in minutes) to sync AWS resources (default 4 hours). Valid CloudWatch rate values are 5, 10, 15, 30, or >= 60 minutes.
+
+Conditions:
+  HasSNSTopic: !Not [!Equals [!Ref NotificationSNSTopicArn, ""]]
 
 Resources:
   # ========== 1. HubSpot Deal Update Sync Function ==========
@@ -136,9 +139,13 @@ Resources:
             - Effect: Allow
               Action: sts:AssumeRole
               Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/HubSpotPartnerCentralServiceRole"
-            - Effect: Allow
-              Action: sns:Publish
-              Resource: !Ref NotificationSNSTopicArn
+        - !If
+          - HasSNSTopic
+          - Statement:
+              - Effect: Allow
+                Action: sns:Publish
+                Resource: !Ref NotificationSNSTopicArn
+          - !Ref "AWS::NoValue"
       Events:
         ScheduledCheck:
           Type: Schedule
