@@ -162,7 +162,25 @@ def _sync_aws_summary(
     # AWS team information
     aws_team = summary.get("OpportunityTeam", [])
     aws_seller = None
+    aws_psm = None
+    aws_psm_email = None
+    aws_psm_phone = None
+    
     if aws_team:
+        # Find PSM by BusinessTitle containing "Partner Success" or "PSM"
+        for member in aws_team:
+            title = member.get("BusinessTitle", "").lower()
+            if "partner success" in title or "psm" in title:
+                # Found the PSM
+                first_name = member.get("FirstName", "")
+                last_name = member.get("LastName", "")
+                aws_psm = f"{first_name} {last_name}".strip()
+                if not aws_psm:
+                    aws_psm = member.get("Email", "")
+                aws_psm_email = member.get("Email", "")
+                aws_psm_phone = member.get("Phone", "")
+                break
+        
         # Usually the first team member is the primary AWS seller
         aws_seller = f"{aws_team[0].get('FirstName', '')} {aws_team[0].get('LastName', '')}".strip()
         if not aws_seller:
@@ -186,6 +204,15 @@ def _sync_aws_summary(
     
     if aws_seller:
         updates["aws_seller_name"] = aws_seller
+    
+    if aws_psm:
+        updates["aws_psm_name"] = aws_psm
+    
+    if aws_psm_email:
+        updates["aws_psm_email"] = aws_psm_email
+    
+    if aws_psm_phone:
+        updates["aws_psm_phone"] = aws_psm_phone
     
     # Update HubSpot
     hubspot.update_deal(deal_id, updates)
@@ -216,4 +243,5 @@ def _sync_aws_summary(
         "reviewStatus": review_status,
         "involvementType": involvement_type,
         "awsSeller": aws_seller,
+        "awsPsm": aws_psm,
     }

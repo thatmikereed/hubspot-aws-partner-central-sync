@@ -43,7 +43,7 @@ class HubSpotClient:
                 "aws_opportunity_id,aws_opportunity_arn,aws_opportunity_title,"
                 "aws_review_status,aws_sync_status,aws_invitation_id,"
                 "aws_industry,aws_delivery_models,aws_primary_needs,"
-                "aws_use_case,aws_expected_spend"
+                "aws_use_case,aws_expected_spend,aws_psm_name,aws_psm_email,aws_psm_phone"
             )
         }
         response = self.session.get(url, params=params)
@@ -409,6 +409,30 @@ class HubSpotClient:
                     "Comma-separated Solution IDs to associate with this opportunity. "
                     "If blank, solutions are auto-matched based on use case."
                 ),
+            },
+            {
+                "name": "aws_psm_name",
+                "label": "AWS Partner Success Manager",
+                "type": "string",
+                "fieldType": "text",
+                "groupName": "dealinformation",
+                "description": "Name of the AWS Partner Success Manager (PSM) assigned to this opportunity",
+            },
+            {
+                "name": "aws_psm_email",
+                "label": "AWS PSM Email",
+                "type": "string",
+                "fieldType": "text",
+                "groupName": "dealinformation",
+                "description": "Email address of the AWS Partner Success Manager",
+            },
+            {
+                "name": "aws_psm_phone",
+                "label": "AWS PSM Phone",
+                "type": "string",
+                "fieldType": "text",
+                "groupName": "dealinformation",
+                "description": "Phone number of the AWS Partner Success Manager",
             },
         ]
 
