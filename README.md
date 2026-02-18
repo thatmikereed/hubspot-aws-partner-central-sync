@@ -16,6 +16,8 @@ AWS EngagementInvitation  ──►  AcceptEngagementInvitation
                                (with #AWS in title)
 ```
 
+> **📖 New to this integration?** See [BUILD.md](./BUILD.md) for complete step-by-step installation instructions.
+
 ## Table of Contents
 
 - [Architecture](#architecture)
