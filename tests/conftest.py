@@ -12,3 +12,5 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 import hubspot_to_partner_central.handler  # noqa: F401
 import partner_central_to_hubspot.handler  # noqa: F401
 import eventbridge_events.handler  # noqa: F401
+import hubspot_to_microsoft.handler  # noqa: F401
+import microsoft_to_hubspot.handler  # noqa: F401

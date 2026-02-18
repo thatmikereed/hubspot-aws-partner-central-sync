@@ -2,9 +2,11 @@ AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 
 Description: >
-  HubSpot ↔ AWS Partner Central Sync
+  HubSpot ↔ AWS Partner Central & Microsoft Partner Center Sync
   - Inbound:  HubSpot deal webhook → Partner Central opportunity (when title contains #AWS)
   - Outbound: Scheduled poll of Partner Central invitations → auto-accept + HubSpot deal creation
+  - Inbound:  HubSpot deal webhook → Microsoft Partner Center referral (when title contains #Microsoft)
+  - Outbound: Scheduled poll of Microsoft referrals → HubSpot deal creation/update
 
 # ============================================================
 # Parameters
@@ -43,6 +45,19 @@ Parameters:
     MaxValue: 60
     Description: How often (in minutes) to poll Partner Central for new invitations
 
+  MicrosoftAccessToken:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: Microsoft Partner Center API access token (Azure AD token with Partner Center permissions)
+
+  MicrosoftPollIntervalMinutes:
+    Type: Number
+    Default: 15
+    MinValue: 5
+    MaxValue: 60
+    Description: How often (in minutes) to poll Microsoft Partner Center for new/updated referrals
+
   Environment:
     Type: String
     Default: production
@@ -63,6 +78,7 @@ Globals:
         HUBSPOT_WEBHOOK_SECRET: !Ref HubSpotWebhookSecret
         PARTNER_CENTRAL_ROLE_ARN: !Ref PartnerCentralRoleArn
         PARTNER_CENTRAL_SOLUTION_ID: !Ref PartnerCentralSolutionId
+        MICROSOFT_ACCESS_TOKEN: !Ref MicrosoftAccessToken
         ENVIRONMENT: !Ref Environment
         LOG_LEVEL: INFO
 
@@ -178,21 +194,104 @@ Resources:
       LogGroupName: !Sub "/aws/lambda/partner-central-to-hubspot-${Environment}"
       RetentionInDays: 30
 
+  # ----------------------------------------------------------
+  # Lambda 3: HubSpot Webhook → Microsoft Partner Center
+  # ----------------------------------------------------------
+  HubSpotToMicrosoftFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "hubspot-to-microsoft-${Environment}"
+      CodeUri: src/hubspot_to_microsoft/
+      Handler: handler.lambda_handler
+      Description: Receives HubSpot deal webhooks and creates Microsoft Partner Center referrals
+      Layers:
+        - !Ref CommonLayer
+      Policies:
+        - AWSLambdaBasicExecutionRole
+      Events:
+        HubSpotWebhook:
+          Type: Api
+          Properties:
+            RestApiId: !Ref WebhookApi
+            Path: /webhook/hubspot-microsoft
+            Method: POST
+
+  # ----------------------------------------------------------
+  # Lambda 4: Microsoft Partner Center → HubSpot (Scheduled)
+  # ----------------------------------------------------------
+  MicrosoftToHubSpotFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "microsoft-to-hubspot-${Environment}"
+      CodeUri: src/microsoft_to_hubspot/
+      Handler: handler.lambda_handler
+      Description: Polls Microsoft Partner Center for referrals and syncs to HubSpot
+      Layers:
+        - !Ref CommonLayer
+      Policies:
+        - AWSLambdaBasicExecutionRole
+      Events:
+        ScheduledPoll:
+          Type: Schedule
+          Properties:
+            Schedule: !Sub "rate(${MicrosoftPollIntervalMinutes} minutes)"
+            Name: !Sub "microsoft-referral-poll-${Environment}"
+            Description: Polls Microsoft Partner Center for new/updated referrals
+            Enabled: true
+
+  # ----------------------------------------------------------
+  # CloudWatch Log Groups for Microsoft functions
+  # ----------------------------------------------------------
+  HubSpotToMicrosoftLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/hubspot-to-microsoft-${Environment}"
+      RetentionInDays: 30
+
+  MicrosoftToHubSpotLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/microsoft-to-hubspot-${Environment}"
+      RetentionInDays: 30
+
+  # ----------------------------------------------------------
+  # SSM Parameter for Microsoft token
+  # ----------------------------------------------------------
+  MicrosoftTokenParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/hubspot-pc-sync/${Environment}/microsoft-access-token"
+      Type: SecureString
+      Value: !Ref MicrosoftAccessToken
+      Description: Microsoft Partner Center API access token
+
 # ============================================================
 # Outputs
 # ============================================================
 Outputs:
   WebhookUrl:
     Description: >
-      HubSpot webhook URL — register this in your HubSpot app's webhook settings
+      HubSpot webhook URL for AWS Partner Central — register this in your HubSpot app's webhook settings
       under Subscriptions > deal.creation
     Value: !Sub "https://${WebhookApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/webhook/hubspot"
+
+  MicrosoftWebhookUrl:
+    Description: >
+      HubSpot webhook URL for Microsoft Partner Center — register this in your HubSpot app's webhook settings
+      under Subscriptions > deal.creation
+    Value: !Sub "https://${WebhookApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/webhook/hubspot-microsoft"
 
   HubSpotToPartnerCentralFunctionArn:
     Value: !GetAtt HubSpotToPartnerCentralFunction.Arn
 
   PartnerCentralToHubSpotFunctionArn:
     Value: !GetAtt PartnerCentralToHubSpotFunction.Arn
+
+  HubSpotToMicrosoftFunctionArn:
+    Value: !GetAtt HubSpotToMicrosoftFunction.Arn
+
+  MicrosoftToHubSpotFunctionArn:
+    Value: !GetAtt MicrosoftToHubSpotFunction.Arn
 
   ApiGatewayId:
     Value: !Ref WebhookApi
