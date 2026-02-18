@@ -20,10 +20,9 @@ import sys
 sys.path.insert(0, "/var/task")
 
 from common.aws_client import get_partner_central_client, PARTNER_CENTRAL_CATALOG
-from common.hubspot_client import HubSpotClient
+from common.hubspot_client import HubSpotClient, HUBSPOT_API_BASE
 
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 def lambda_handler(event: dict, context) -> dict:
@@ -48,10 +47,11 @@ def lambda_handler(event: dict, context) -> dict:
         
         for deal in deals:
             deal_id = deal["id"]
-            opportunity_id = deal.get("properties", {}).get("aws_opportunity_id")
+            props = deal.get("properties", {})
+            opportunity_id = props.get("aws_opportunity_id")
             
             try:
-                result = _sync_aws_summary(deal_id, opportunity_id, hubspot, pc_client)
+                result = _sync_aws_summary(deal_id, opportunity_id, hubspot, pc_client, props)
                 if result:
                     synced.append(result)
             except Exception as exc:
@@ -87,7 +87,7 @@ def _list_eligible_deals(hubspot: HubSpotClient) -> list:
     AWS summary data is available (Approved, Action Required, In Review).
     """
     # Search for deals with aws_opportunity_id present
-    url = f"{hubspot.session.headers['Authorization'].split()[0]}://api.hubapi.com/crm/v3/objects/deals/search"
+    url = f"{HUBSPOT_API_BASE}/crm/v3/objects/deals/search"
     
     payload = {
         "filterGroups": [
@@ -128,7 +128,8 @@ def _sync_aws_summary(
     deal_id: str,
     opportunity_id: str,
     hubspot: HubSpotClient,
-    pc_client
+    pc_client,
+    current_deal_props: dict
 ) -> dict | None:
     """
     Fetch AWS Opportunity Summary and sync to HubSpot.
@@ -190,8 +191,8 @@ def _sync_aws_summary(
     hubspot.update_deal(deal_id, updates)
     
     # If engagement score changed significantly, add a note
-    current_score = summary.get("properties", {}).get("aws_engagement_score")
-    if engagement_score and current_score:
+    current_score = current_deal_props.get("aws_engagement_score")
+    if engagement_score is not None and current_score:
         try:
             score_delta = int(engagement_score) - int(current_score)
             if abs(score_delta) >= 10:

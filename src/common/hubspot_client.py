@@ -9,6 +9,7 @@ import hmac
 import hashlib
 import logging
 import requests
+from requests.exceptions import RequestException, HTTPError
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -67,7 +68,7 @@ class HubSpotClient:
         if company_ids:
             try:
                 company = self.get_company(company_ids[0])
-            except Exception as e:
+            except (RequestException, HTTPError) as e:
                 logger.warning("Could not fetch company %s: %s", company_ids[0], e)
 
         # Fetch associated contact IDs (max 10 for PC)
@@ -76,7 +77,7 @@ class HubSpotClient:
         for cid in contact_ids[:10]:
             try:
                 contacts.append(self.get_contact(cid))
-            except Exception as e:
+            except (RequestException, HTTPError) as e:
                 logger.warning("Could not fetch contact %s: %s", cid, e)
 
         return deal, company, contacts
@@ -122,7 +123,8 @@ class HubSpotClient:
             f"{HUBSPOT_API_BASE}/crm/v3/objects/notes/{note_id}"
             f"/associations/deals/{deal_id}/note_to_deal"
         )
-        self.session.put(assoc_url)
+        resp = self.session.put(assoc_url)
+        resp.raise_for_status()
         return {"noteId": note_id}
 
     def search_deals_by_aws_opportunity_id(self, aws_opportunity_id: str) -> list:
@@ -215,7 +217,7 @@ class HubSpotClient:
             if not results:
                 return []
             return [assoc["id"] for assoc in results[0].get("to", [])]
-        except Exception as e:
+        except (RequestException, HTTPError) as e:
             logger.warning("Could not fetch %s→%s associations for %s: %s", from_type, to_type, object_id, e)
             return []
 

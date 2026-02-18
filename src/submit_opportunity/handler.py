@@ -21,8 +21,7 @@ sys.path.insert(0, "/var/task")
 from common.aws_client import get_partner_central_client, PARTNER_CENTRAL_CATALOG
 from common.hubspot_client import HubSpotClient
 
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Configurable: default AWS submission parameters
 DEFAULT_INVOLVEMENT_TYPE = os.environ.get("DEFAULT_INVOLVEMENT_TYPE", "Co-Sell")
