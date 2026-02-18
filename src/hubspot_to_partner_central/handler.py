@@ -37,8 +37,7 @@ from common.mappers import (
     hubspot_deal_to_partner_central_update,
 )
 
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+logger = logging.getLogger(__name__)
 
 AWS_TRIGGER_TAG = "#AWS"
 

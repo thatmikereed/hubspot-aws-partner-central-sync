@@ -30,8 +30,7 @@ from common.aws_client import get_partner_central_client, PARTNER_CENTRAL_CATALO
 from common.hubspot_client import HubSpotClient
 from common.mappers import partner_central_opportunity_to_hubspot
 
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+logger = logging.getLogger(__name__)
 
 # How long to wait for a task to complete (seconds)
 TASK_POLL_INTERVAL = 2

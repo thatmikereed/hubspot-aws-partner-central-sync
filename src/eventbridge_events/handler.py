@@ -25,8 +25,7 @@ from common.aws_client import get_partner_central_client, PARTNER_CENTRAL_CATALO
 from common.hubspot_client import HubSpotClient
 from common.mappers import partner_central_opportunity_to_hubspot
 
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 def lambda_handler(event: dict, context) -> dict:

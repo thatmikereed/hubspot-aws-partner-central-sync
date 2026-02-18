@@ -227,6 +227,21 @@ def hubspot_deal_to_partner_central(deal: dict, associated_company: Optional[dic
     # ---- PrimaryNeedsFromAws ----
     primary_needs = _parse_primary_needs(props.get("aws_primary_needs"))
 
+    # Build account with optional WebsiteUrl
+    account = {
+        "CompanyName": company_name,
+        "Industry": industry,
+        "Address": {
+            "CountryCode": country_code,
+            **({"City": city} if city else {}),
+            **({"StateOrRegion": state} if state else {}),
+            **({"PostalCode": postal_code} if postal_code else {}),
+            **({"StreetAddress": street} if street else {}),
+        },
+    }
+    if website_url:
+        account["WebsiteUrl"] = website_url
+
     opportunity: dict = {
         "Catalog": "AWS",
         "ClientToken": _make_client_token(deal["id"]),
@@ -236,18 +251,7 @@ def hubspot_deal_to_partner_central(deal: dict, associated_company: Optional[dic
         "PartnerOpportunityIdentifier": str(deal["id"])[:64],
         "PrimaryNeedsFromAws": primary_needs,
         "Customer": {
-            "Account": {
-                "CompanyName": company_name,
-                "Industry": industry,
-                "WebsiteUrl": website_url,
-                "Address": {
-                    "CountryCode": country_code,
-                    **({"City": city} if city else {}),
-                    **({"StateOrRegion": state} if state else {}),
-                    **({"PostalCode": postal_code} if postal_code else {}),
-                    **({"StreetAddress": street} if street else {}),
-                },
-            },
+            "Account": account,
             **({"Contacts": contacts} if contacts else {}),
         },
         "LifeCycle": {
@@ -409,17 +413,18 @@ def _sanitize_business_problem(raw: Optional[str], deal_name: str = "") -> str:
     return text[:2000]
 
 
-def _sanitize_website(url: Optional[str]) -> str:
+def _sanitize_website(url: Optional[str]) -> Optional[str]:
     """
     Ensure WebsiteUrl is 4-255 chars and starts with https://.
-    Falls back to a placeholder if nothing is available.
+    Returns None if no valid URL is available.
     """
     if not url:
-        return "https://www.example.com"
+        return None
     url = url.strip()
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
-    return url[:255] if len(url) >= 4 else "https://www.example.com"
+    # Return None if URL is too short after sanitization
+    return url[:255] if len(url) >= 4 else None
 
 
 def _map_industry(raw: Optional[str]) -> str:
