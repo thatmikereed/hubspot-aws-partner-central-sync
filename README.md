@@ -156,21 +156,7 @@ partnercentral-selling:ListEngagements
 
 The Lambda execution roles are granted only `sts:AssumeRole` on this single role — all Partner Central permissions flow through it.
 
----
 
-## Environment Variables
-
-| Variable | Required | Description |
-|---|---|---|
-| `HUBSPOT_ACCESS_TOKEN` | ✅ | HubSpot Private App token |
-| `HUBSPOT_WEBHOOK_SECRET` | ⚠️ Recommended | Webhook HMAC signing secret |
-| `PARTNER_CENTRAL_ROLE_ARN` | ⚠️ Recommended | Full ARN of the service role. Auto-constructed from account ID if blank. |
-| `AWS_REGION` | ✅ | AWS region for Partner Central API calls |
-| `ENVIRONMENT` | ✅ | `production` \| `staging` \| `development` |
-
-Copy `.env.example` to `.env` for local development.
-
----
 
 ## Local Development
 
@@ -231,24 +217,98 @@ sam local invoke HubSpotToPartnerCentralFunction \
 
 ---
 
-## Additional Features
+## Advanced Features
 
-This integration includes advanced features for enhanced bidirectional sync. See **[FEATURES.md](FEATURES.md)** for the original 5 advanced features and **[NEW-FEATURES.md](NEW-FEATURES.md)** for the 4 newest additions:
+This integration includes comprehensive bidirectional sync capabilities:
 
-### New Bidirectional Features (See NEW-FEATURES.md)
+### Core Features
 
-1. **HubSpot Deal Update Sync** — Real-time sync of HubSpot deal property changes to Partner Central
-2. **Solution Management API** — List, search, and browse Partner Central solutions via REST API
-3. **Engagement Resource Snapshot Sync** — Auto-sync AWS resources (whitepapers, case studies) to HubSpot deals
-4. **Smart Notification System** — Intelligent alerts for critical Partner Central events (engagement scores, review status, seller assignments)
+1. **Bidirectional Deal Sync** — Real-time sync of HubSpot deal property changes (stage, close date, amount, description) to Partner Central
+2. **Contact & Company Sync** — Automatic sync of contact and company updates to all associated opportunities
+3. **Opportunity Submission** — Submit opportunities to AWS for co-sell review with status tracking
+4. **AWS Summary Sync** — Sync engagement scores, review status, AWS feedback, and next steps
+5. **Multi-Solution Association** — Intelligent solution matching and automatic association based on deal characteristics
 
-### Original Advanced Features (See FEATURES.md)
+### Real-Time Event Processing
 
-1. **Opportunity Submission to AWS** — Submit opportunities for co-sell review
-2. **AWS Opportunity Summary Sync** — Sync engagement scores and AWS feedback
-3. **EventBridge Real-Time Event Handling** — Instant invitation acceptance and updates
-4. **Reverse Sync** — Partner Central → HubSpot updates
-5. **Multi-Solution Auto-Association** — Intelligent solution matching and linking
+6. **EventBridge Integration** — Instant processing of Partner Central events (invitations, opportunity updates)
+7. **Smart Notifications** — Intelligent alerts for critical events (engagement score changes ±15 points, review status changes, AWS seller assignments)
+8. **Reverse Sync** — Partner Central changes flow back to HubSpot within seconds
+
+### Resource & Team Management
+
+9. **Resource Snapshot Sync** — Auto-sync AWS resources (whitepapers, case studies, solution briefs) to HubSpot deals
+10. **Engagement Lifecycle** — Track engagement status, team members, and milestones
+11. **Team Assignment** — Automatic sync of deal owner changes to Partner Central
+
+### Developer Tools
+
+12. **Solution Management API** — REST endpoints to list, search, and browse Partner Central solutions dynamically
+13. **Conflict Detection** — Detect and resolve simultaneous updates with configurable strategies
+14. **Audit Trail** — Permanent audit logging in DynamoDB with 7-year retention for compliance
+
+---
+
+## Feature Details
+
+### Bidirectional Sync
+Changes flow automatically in both directions:
+- HubSpot → Partner Central: Deal creation, property updates, contact/company changes, team assignments
+- Partner Central → HubSpot: Engagement invitations, opportunity updates, review status, engagement scores, AWS resources
+
+### Smart Notifications
+Intelligent alerting system that creates HubSpot tasks and notes for:
+- **Engagement Score Changes**: Notifies when score increases/decreases by ±15 points (configurable)
+- **Review Status Updates**: Alerts on Approved, Action Required, or Rejected status
+- **AWS Seller Assignment**: Notifies when AWS assigns or changes the seller
+- **Notifications include**: Clear action items, due dates (24hr for high priority), and contextual information
+
+### Solution Management
+Dynamic solution discovery and association:
+- **Auto-matching**: Intelligently ranks solutions by relevance based on use case, industry, keywords, and categories
+- **REST API**: Search and browse all Partner Central solutions programmatically
+- **Manual Override**: Specify custom solution IDs via HubSpot properties when needed
+
+### Resource Sync
+Automatic sharing of AWS resources:
+- Syncs whitepapers, case studies, reference architectures, presentations, training materials
+- Creates formatted HubSpot notes with links and descriptions
+- Runs every 4 hours (configurable) to capture new resources
+- Tracks synced resources to prevent duplicates
+
+### Audit & Compliance
+Enterprise-grade tracking and conflict resolution:
+- **Permanent Audit Trail**: DynamoDB storage with 7-year retention
+- **Conflict Detection**: Identifies simultaneous updates in both systems
+- **Resolution Strategies**: Last-write-wins, HubSpot-wins, Partner-Central-wins, or manual resolution
+- **Compliance Reports**: Full change history for regulatory requirements
+
+---
+
+## Configuration
+
+### Environment Variables
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `HUBSPOT_ACCESS_TOKEN` | ✅ | — | HubSpot Private App token |
+| `HUBSPOT_WEBHOOK_SECRET` | ⚠️ | — | Webhook HMAC signing secret (strongly recommended) |
+| `PARTNER_CENTRAL_ROLE_ARN` | ⚠️ | Auto-constructed | Full ARN of the service role |
+| `AWS_REGION` | ✅ | — | AWS region for Partner Central API calls |
+| `ENVIRONMENT` | ✅ | development | `production` \| `staging` \| `development` |
+| `ENGAGEMENT_SCORE_THRESHOLD` | — | 15 | Notification threshold for score changes |
+| `HIGH_ENGAGEMENT_SCORE` | — | 80 | High priority threshold |
+| `NOTIFICATION_SNS_TOPIC_ARN` | — | — | Optional SNS topic for external notifications |
+
+### Scheduled Tasks
+
+| Task | Default Interval | Configurable | Purpose |
+|---|---|---|---|
+| Invitation Poll | 5 minutes | ✅ | Check for new engagement invitations |
+| AWS Summary Sync | 60 minutes | ✅ | Fetch engagement scores and AWS feedback |
+| Resource Sync | 4 hours | ✅ | Sync AWS-provided resources |
+| Smart Notifications | 30 minutes | ✅ | Check for critical events |
+| Engagement Lifecycle | 30 minutes | ✅ | Sync engagement status and team |
 
 ---
 
@@ -256,8 +316,10 @@ This integration includes advanced features for enhanced bidirectional sync. See
 
 **Add more fields**: Edit `src/common/mappers.py` — both mapping functions are documented and straightforward to extend.
 
-**Change the poll interval**: Update `InvitationPollIntervalMinutes` in `samconfig.toml` and redeploy.
+**Change sync intervals**: Update the respective parameter in `template.yaml` and redeploy.
 
-**Add custom notifications**: Extend `src/smart_notifications/handler.py` to add custom notification rules.
+**Add custom notifications**: Extend `src/smart_notifications/handler.py` to add custom notification rules and thresholds.
 
-**Integrate with Slack/Email**: Configure the SNS topic ARN in `template-new-features.yaml` to send notifications externally.
+**Integrate with Slack/Email**: Configure an SNS topic ARN to send notifications to external systems (Slack webhooks, email, etc.).
+
+**Custom solutions matching**: Modify `src/common/solution_matcher.py` to adjust ranking algorithm or add custom matching rules.

@@ -6,101 +6,73 @@ This document outlines the security measures implemented in this integration and
 
 ### 1. Confused Deputy Attack Prevention
 
-**Issue**: Without proper protection, a malicious actor could trick your Lambda functions into assuming the `HubSpotPartnerCentralServiceRole` on their behalf.
+**Protection Implemented**: The IAM role trust policy requires an `ExternalId` condition (`"HubSpotPartnerCentralIntegration"`) and all `AssumeRole` calls include this ExternalId to prevent unauthorized cross-account access.
 
-**Mitigation**: 
-- The IAM role trust policy requires an `ExternalId` condition: `"HubSpotPartnerCentralIntegration"`
-- All `AssumeRole` calls in the code include this ExternalId
-- This prevents unauthorized cross-account access even if an attacker knows the role ARN
+**Why it matters**: Without this protection, a malicious actor who knows the role ARN could potentially trick your Lambda functions into assuming the `HubSpotPartnerCentralServiceRole` on their behalf.
 
-**Reference**: `src/common/aws_client.py` line 18, `infra/iam-role.yaml` line 43
+**Implementation**: `src/common/aws_client.py`, `infra/iam-role.yaml`
+
+**Reference**: [AWS Confused Deputy Prevention](https://docs.aws.amazon.com/IAM/latest/UserGuide/confused-deputy.html)
 
 ### 2. Webhook Signature Verification
 
-**Issue**: Without signature verification, attackers could send forged webhook requests to create or modify opportunities.
+**Protection Implemented**: All incoming HubSpot webhooks are verified using HMAC-SHA256 signatures before processing. Signature verification happens **before** parsing the request body. Requests with missing or invalid signatures are rejected with HTTP 400.
 
-**Mitigation**:
-- All incoming HubSpot webhooks are verified using HMAC-SHA256 signatures
-- Signature verification happens **before** parsing the request body
-- Requests with missing or invalid signatures are rejected with HTTP 400
-- The `HUBSPOT_WEBHOOK_SECRET` environment variable must be configured in production
+**Why it matters**: Without signature verification, attackers could send forged webhook requests to create or modify opportunities, or exploit JSON parsing vulnerabilities.
 
-**Reference**: `src/hubspot_to_partner_central/handler.py` lines 293-322
+**Configuration**: The `HUBSPOT_WEBHOOK_SECRET` environment variable must be configured in production (strongly recommended).
 
-**Configuration**:
-```yaml
-# In template.yaml
-Parameters:
-  HubSpotWebhookSecret:
-    Type: String
-    NoEcho: true
-    Description: HubSpot webhook signing secret (REQUIRED for production)
-```
+**Implementation**: `src/hubspot_to_partner_central/handler.py`
 
 ### 3. Sensitive Data Redaction in Logs
 
-**Issue**: CloudWatch logs could expose sensitive credentials if the entire event is logged.
+**Protection Implemented**: All HTTP headers containing credentials are redacted before logging to CloudWatch. Redacted headers include: `Authorization`, `X-HubSpot-Signature`, `X-HubSpot-Signature-V3`, `Cookie`, `X-Api-Key`. Large request bodies are truncated to prevent log flooding.
 
-**Mitigation**:
-- All HTTP headers containing credentials are redacted before logging
-- Redacted headers: `Authorization`, `X-HubSpot-Signature`, `X-HubSpot-Signature-V3`, `Cookie`, `X-Api-Key`
-- Large request bodies are truncated to prevent log flooding
-- The redaction function creates a safe copy without modifying the original event
+**Why it matters**: CloudWatch logs could expose sensitive credentials if the entire event is logged, accessible to anyone with log read permissions.
 
-**Reference**: `src/hubspot_to_partner_central/handler.py` lines 49-76
+**Implementation**: `src/hubspot_to_partner_central/handler.py`
 
 ### 4. Input Validation and Sanitization
 
-**Issue**: Unvalidated inputs could lead to injection attacks, DoS, or data corruption.
+**Protection Implemented**: All external inputs are validated and sanitized before use. This includes:
+- ID validation (numeric for HubSpot, alphanumeric for Partner Central)
+- Maximum length enforcement (titles: 255 chars, descriptions: 10,000 chars, emails: 254 chars, URLs: 2048 chars)
+- Email and URL format validation with regex patterns
+- Monetary amount validation with reasonable bounds (0 to 1 trillion USD)
+- Control character stripping while preserving newlines/tabs
 
-**Mitigation**:
-- All external IDs (HubSpot, Partner Central) are validated against expected patterns
-- String fields have maximum length limits to prevent DoS
-- Email addresses and URLs are validated with regex patterns
-- Monetary amounts are validated and bounded
-- Control characters are stripped from text fields
-- All validation is centralized in `src/common/validators.py`
+**Why it matters**: Unvalidated inputs could lead to injection attacks, denial of service, or data corruption.
 
-**Reference**: `src/common/validators.py`, `src/hubspot_to_partner_central/handler.py` line 122
+**Implementation**: `src/common/validators.py` (centralized validation module)
 
 ### 5. Secure Credential Management
 
-**Issue**: Hardcoded or exposed credentials in code or logs.
+**Secure Storage**: HubSpot access token is stored in AWS Systems Manager Parameter Store as a SecureString. No credentials are hardcoded in code. Environment variables use CloudFormation's `NoEcho: true` to prevent exposure in console.
 
-**Mitigation**:
-- HubSpot access token is stored in AWS Systems Manager Parameter Store as a SecureString
-- No credentials are hardcoded in the code
-- Environment variables use CloudFormation's `NoEcho: true` to prevent exposure in console
-- Temporary AWS credentials from STS AssumeRole expire after 1 hour
-- No long-term AWS credentials are stored
+**Temporary Credentials**: All AWS API calls use temporary credentials from STS AssumeRole that expire after 1 hour. No long-term AWS credentials are stored.
 
-**Reference**: `template.yaml` lines 13-16, 159-164
+**Why it matters**: Hardcoded or exposed credentials in code or logs create security vulnerabilities.
+
+**Implementation**: `template.yaml`, Parameter Store integration
 
 ### 6. Least Privilege IAM Permissions
 
-**Issue**: Overly broad IAM permissions increase the blast radius of a security incident.
+**Implementation**: Lambda execution roles only have permission to assume the service role. The service role explicitly lists only required Partner Central actions. No wildcard permissions on sensitive actions.
 
-**Mitigation**:
-- Lambda execution roles only have permission to assume the service role
-- The service role uses scoped-down permissions despite using `AWSPartnerCentralOpportunityManagement`
-- Inline policy explicitly lists only required Partner Central actions
-- No wildcard permissions on sensitive actions
+**Why it matters**: Overly broad IAM permissions increase the blast radius of a security incident.
 
-**Reference**: `infra/iam-role.yaml` lines 50-80, `template.yaml` lines 101-106
+**Implementation**: `infra/iam-role.yaml`, `template.yaml`
 
 ### 7. Dependency Security
 
-**Status**: ✅ No known vulnerabilities
+**Status**: ✅ All dependencies checked against GitHub Advisory Database with no known vulnerabilities
 
-All dependencies have been checked against the GitHub Advisory Database:
+**Dependencies**:
 - `boto3>=1.34.0` - ✅ No vulnerabilities
 - `botocore>=1.34.0` - ✅ No vulnerabilities  
 - `requests>=2.31.0` - ✅ No vulnerabilities
 
-**Maintenance**: Regularly update dependencies and re-check for vulnerabilities:
-```bash
-pip install --upgrade boto3 botocore requests
-```
+**Maintenance**: Regularly update dependencies and re-check for vulnerabilities using `pip install --upgrade boto3 botocore requests`
 
 ---
 
