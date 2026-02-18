@@ -2,10 +2,8 @@
 Tests for EventBridge event processing, specifically the Closed Lost notification feature.
 """
 
-import json
 import pytest
-from unittest.mock import Mock, patch, MagicMock
-from datetime import datetime, timezone
+from unittest.mock import Mock
 
 
 @pytest.fixture
@@ -115,14 +113,17 @@ def sample_aws_summary():
 
 
 def test_closed_lost_creates_notification_instead_of_updating_stage(
-    mock_hubspot_client, mock_pc_client, sample_opportunity_closed_lost, sample_aws_summary
+    mock_hubspot_client,
+    mock_pc_client,
+    sample_opportunity_closed_lost,
+    sample_aws_summary,
 ):
     """
     Test that when AWS marks an opportunity as Closed Lost, we create a
     notification task instead of automatically updating the HubSpot deal stage.
     """
     from eventbridge_events.handler import _handle_opportunity_updated
-    
+
     # Setup mock responses
     mock_hubspot_client.search_deals_by_aws_opportunity_id.return_value = [
         {"id": "12345"}
@@ -136,60 +137,64 @@ def test_closed_lost_creates_notification_instead_of_updating_stage(
     }
     mock_pc_client.get_opportunity.return_value = sample_opportunity_closed_lost
     mock_pc_client.get_aws_opportunity_summary.return_value = sample_aws_summary
-    
+
     # Mock task creation response
     mock_hubspot_client.session.post.return_value.raise_for_status = Mock()
     mock_hubspot_client.session.post.return_value.json.return_value = {"id": "task-123"}
     mock_hubspot_client.session.put.return_value.raise_for_status = Mock()
     mock_hubspot_client.add_note_to_deal = Mock()
     mock_hubspot_client.update_deal = Mock()
-    
+
     # Create event
-    detail = {
-        "opportunity": {"identifier": "O1234567890"}
-    }
-    
+    detail = {"opportunity": {"identifier": "O1234567890"}}
+
     # Execute
     result = _handle_opportunity_updated(detail, mock_hubspot_client, mock_pc_client)
-    
+
     # Verify task was created
     assert mock_hubspot_client.session.post.called
     task_call = mock_hubspot_client.session.post.call_args
     assert "tasks" in task_call[0][0]  # URL contains 'tasks'
-    
+
     task_data = task_call[1]["json"]
     assert "Closed Lost" in task_data["properties"]["hs_task_subject"]
-    assert "reach out to your AWS Account Executive" in task_data["properties"]["hs_task_body"]
+    assert (
+        "reach out to your AWS Account Executive"
+        in task_data["properties"]["hs_task_body"]
+    )
     assert task_data["properties"]["hs_task_priority"] == "HIGH"
-    
+
     # Verify task was associated with deal
     assert mock_hubspot_client.session.put.called
     assoc_call = mock_hubspot_client.session.put.call_args
     assert "associations" in assoc_call[0][0]
-    
+
     # Verify note was added
     assert mock_hubspot_client.add_note_to_deal.called
     note_call = mock_hubspot_client.add_note_to_deal.call_args
     assert "Closed Lost" in note_call[0][1]
-    
+
     # Verify deal was updated BUT stage was NOT updated to closedlost
     assert mock_hubspot_client.update_deal.called
     update_call = mock_hubspot_client.update_deal.call_args
     updates = update_call[0][1]
     assert "dealstage" not in updates or updates.get("dealstage") != "closedlost"
-    
+
     # Verify result indicates success
     assert result["status"] == "synced"
 
 
 def test_non_closed_lost_stage_updates_normally(
-    mock_hubspot_client, mock_pc_client, sample_opportunity_qualified, sample_aws_summary
+    mock_hubspot_client,
+    mock_pc_client,
+    sample_opportunity_qualified,
+    sample_aws_summary,
 ):
     """
     Test that non-Closed Lost stage changes still sync normally to HubSpot.
     """
     from eventbridge_events.handler import _handle_opportunity_updated
-    
+
     # Setup mock responses
     mock_hubspot_client.search_deals_by_aws_opportunity_id.return_value = [
         {"id": "12345"}
@@ -198,22 +203,20 @@ def test_non_closed_lost_stage_updates_normally(
     mock_pc_client.get_aws_opportunity_summary.return_value = sample_aws_summary
     mock_hubspot_client.update_deal = Mock()
     mock_hubspot_client.add_note_to_deal = Mock()
-    
+
     # Create event
-    detail = {
-        "opportunity": {"identifier": "O1234567890"}
-    }
-    
+    detail = {"opportunity": {"identifier": "O1234567890"}}
+
     # Execute
     result = _handle_opportunity_updated(detail, mock_hubspot_client, mock_pc_client)
-    
+
     # Verify deal was updated with the stage
     assert mock_hubspot_client.update_deal.called
     update_call = mock_hubspot_client.update_deal.call_args
     updates = update_call[0][1]
     assert "dealstage" in updates
     assert updates["dealstage"] == "qualifiedtobuy"  # Qualified maps to qualifiedtobuy
-    
+
     # Verify task creation was NOT called (no closed lost notification)
     # The post call might be for other things, but not for tasks
     if mock_hubspot_client.session.post.called:
@@ -221,19 +224,22 @@ def test_non_closed_lost_stage_updates_normally(
         for call in mock_hubspot_client.session.post.call_args_list:
             url = call[0][0] if call[0] else ""
             assert "tasks" not in url
-    
+
     # Verify result
     assert result["status"] == "synced"
 
 
 def test_closed_lost_notification_without_deal_owner(
-    mock_hubspot_client, mock_pc_client, sample_opportunity_closed_lost, sample_aws_summary
+    mock_hubspot_client,
+    mock_pc_client,
+    sample_opportunity_closed_lost,
+    sample_aws_summary,
 ):
     """
     Test that closed lost notification works even when deal has no owner.
     """
     from eventbridge_events.handler import _handle_opportunity_updated
-    
+
     # Setup mock responses with no owner
     mock_hubspot_client.search_deals_by_aws_opportunity_id.return_value = [
         {"id": "12345"}
@@ -247,29 +253,27 @@ def test_closed_lost_notification_without_deal_owner(
     }
     mock_pc_client.get_opportunity.return_value = sample_opportunity_closed_lost
     mock_pc_client.get_aws_opportunity_summary.return_value = sample_aws_summary
-    
+
     # Mock task creation response
     mock_hubspot_client.session.post.return_value.raise_for_status = Mock()
     mock_hubspot_client.session.post.return_value.json.return_value = {"id": "task-123"}
     mock_hubspot_client.session.put.return_value.raise_for_status = Mock()
     mock_hubspot_client.add_note_to_deal = Mock()
     mock_hubspot_client.update_deal = Mock()
-    
+
     # Create event
-    detail = {
-        "opportunity": {"identifier": "O1234567890"}
-    }
-    
+    detail = {"opportunity": {"identifier": "O1234567890"}}
+
     # Execute - should not raise exception
     result = _handle_opportunity_updated(detail, mock_hubspot_client, mock_pc_client)
-    
+
     # Verify task was still created
     assert mock_hubspot_client.session.post.called
     task_call = mock_hubspot_client.session.post.call_args
     task_data = task_call[1]["json"]
-    
+
     # Owner should not be in the task data
     assert "hubspot_owner_id" not in task_data["properties"]
-    
+
     # Verify result
     assert result["status"] == "synced"
