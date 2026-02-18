@@ -64,8 +64,13 @@ def sanitize_string(value: Any, max_length: int = None, field_name: str = "field
         )
         str_value = str_value[:max_length]
     
-    # Remove control characters (but keep newlines and tabs)
-    str_value = ''.join(char for char in str_value if char >= ' ' or char in '\n\r\t')
+    # Remove control characters (ASCII 0-31 except newline, carriage return, tab)
+    # Keep printable characters (ASCII 32 and above) plus allowed whitespace
+    allowed_control_chars = {'\n', '\r', '\t'}
+    str_value = ''.join(
+        char for char in str_value 
+        if ord(char) >= 32 or char in allowed_control_chars
+    )
     
     return str_value
 

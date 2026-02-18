@@ -87,12 +87,16 @@ def lambda_handler(event: dict, context) -> dict:
     logger.info("Received event: %s", json.dumps(_redact_sensitive_data(event), default=str))
 
     # Verify signature BEFORE parsing body to prevent processing malicious payloads
+    # Note: _verify_signature handles base64 decoding internally for verification
     _verify_signature(event)
 
     try:
         body = event.get("body", "")
+        # Decode if base64-encoded (API Gateway feature)
         if event.get("isBase64Encoded"):
             body = base64.b64decode(body).decode("utf-8")
+        
+        # Parse JSON payload
         webhook_events = json.loads(body) if isinstance(body, str) else body
     except (json.JSONDecodeError, Exception) as exc:
         logger.error("Failed to parse webhook body: %s", exc)
@@ -343,13 +347,19 @@ def _verify_signature(event: dict) -> None:
     
     Security: This MUST be called before parsing the body to prevent
     processing of malicious payloads.
+    
+    Note: This function handles base64 decoding internally - do NOT decode
+    the body before calling this function.
     """
     secret = os.environ.get("HUBSPOT_WEBHOOK_SECRET")
     if not secret:
-        logger.warning(
-            "HUBSPOT_WEBHOOK_SECRET not configured - webhook signature verification disabled. "
-            "This is a security risk in production environments."
+        logger.error(
+            "CRITICAL SECURITY WARNING: HUBSPOT_WEBHOOK_SECRET is not configured! "
+            "Webhook signature verification is disabled. This allows unauthenticated "
+            "requests and is a CRITICAL security risk in production. "
+            "Set HUBSPOT_WEBHOOK_SECRET immediately or risk unauthorized access."
         )
+        # In production, you may want to: raise ValueError("Webhook secret required")
         return
     
     headers = {k.lower(): v for k, v in (event.get("headers") or {}).items()}
@@ -359,8 +369,10 @@ def _verify_signature(event: dict) -> None:
         logger.error("Missing HubSpot signature header in webhook request")
         raise ValueError("Missing required webhook signature header")
     
+    # Get the raw body for signature verification
     body = event.get("body", "")
     if event.get("isBase64Encoded"):
+        # Decode for signature verification - the caller will decode again for parsing
         body = base64.b64decode(body)
     else:
         body = body.encode("utf-8") if isinstance(body, str) else body
