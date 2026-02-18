@@ -22,6 +22,7 @@ Both event types respect Partner Central's review-status rules:
   - If ReviewStatus is Submitted or In-Review, all updates are blocked.
 """
 
+import base64
 import json
 import logging
 import os
@@ -36,6 +37,10 @@ from common.mappers import (
     hubspot_deal_to_partner_central,
     hubspot_deal_to_partner_central_update,
 )
+from common.validators import (
+    validate_hubspot_id,
+    sanitize_deal_name,
+)
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -45,21 +50,57 @@ AWS_TRIGGER_TAG = "#AWS"
 # HubSpot custom property that holds the PC title to detect renames
 PC_TITLE_PROPERTY = "aws_opportunity_title"
 
+# Sensitive headers to redact from logs
+SENSITIVE_HEADERS = {
+    "authorization", "x-hubspot-signature", "x-hubspot-signature-v3",
+    "cookie", "x-api-key"
+}
+
+
+def _redact_sensitive_data(event: dict) -> dict:
+    """
+    Create a sanitized copy of the event for logging.
+    Redacts sensitive headers and tokens to prevent credential exposure.
+    """
+    safe_event = event.copy()
+    
+    # Redact sensitive headers
+    if "headers" in safe_event:
+        safe_headers = {}
+        for key, value in (safe_event.get("headers") or {}).items():
+            if key.lower() in SENSITIVE_HEADERS:
+                safe_headers[key] = "[REDACTED]"
+            else:
+                safe_headers[key] = value
+        safe_event["headers"] = safe_headers
+    
+    # Don't log the full body if it's large
+    if "body" in safe_event and safe_event["body"]:
+        body_len = len(str(safe_event["body"]))
+        if body_len > 1000:
+            safe_event["body"] = f"[BODY REDACTED - {body_len} bytes]"
+    
+    return safe_event
+
 
 def lambda_handler(event: dict, context) -> dict:
-    logger.info("Received event: %s", json.dumps(event, default=str))
+    logger.info("Received event: %s", json.dumps(_redact_sensitive_data(event), default=str))
+
+    # Verify signature BEFORE parsing body to prevent processing malicious payloads
+    # Note: _verify_signature handles base64 decoding internally for verification
+    _verify_signature(event)
 
     try:
         body = event.get("body", "")
+        # Decode if base64-encoded (API Gateway feature)
         if event.get("isBase64Encoded"):
-            import base64
             body = base64.b64decode(body).decode("utf-8")
+        
+        # Parse JSON payload
         webhook_events = json.loads(body) if isinstance(body, str) else body
     except (json.JSONDecodeError, Exception) as exc:
         logger.error("Failed to parse webhook body: %s", exc)
         return _response(400, {"error": "Invalid JSON payload"})
-
-    _verify_signature(event)
 
     processed = []
     errors = []
@@ -109,10 +150,20 @@ def _handle_deal_creation(deal_id: str, hubspot: HubSpotClient, pc_client) -> di
     Opportunity. On success, associates the configured PC solution and writes
     the Opportunity ID + title back to HubSpot.
     """
+    # Validate deal ID
+    try:
+        deal_id = validate_hubspot_id(deal_id, "Deal ID")
+    except ValueError as e:
+        logger.error(f"Invalid deal ID: {e}")
+        raise
+    
     deal, company, contacts = hubspot.get_deal_with_associations(deal_id)
     deal_name = deal.get("properties", {}).get("dealname", "")
+    
+    # Sanitize deal name for logging
+    safe_deal_name = sanitize_deal_name(deal_name)
 
-    logger.info("Processing deal creation %s: '%s'", deal_id, deal_name)
+    logger.info("Processing deal creation %s: '%s'", deal_id, safe_deal_name)
 
     if AWS_TRIGGER_TAG.lower() not in deal_name.lower():
         logger.info("Deal '%s' does not contain %s — skipping", deal_name, AWS_TRIGGER_TAG)
@@ -291,18 +342,44 @@ def _get_pc_opportunity(pc_client, opportunity_id: str) -> dict | None:
 
 
 def _verify_signature(event: dict) -> None:
-    """Verify HubSpot webhook signature if secret is configured."""
+    """
+    Verify HubSpot webhook signature if secret is configured.
+    
+    Security: This MUST be called before parsing the body to prevent
+    processing of malicious payloads.
+    
+    Note: This function handles base64 decoding internally - do NOT decode
+    the body before calling this function.
+    """
     secret = os.environ.get("HUBSPOT_WEBHOOK_SECRET")
     if not secret:
+        logger.error(
+            "CRITICAL SECURITY WARNING: HUBSPOT_WEBHOOK_SECRET is not configured! "
+            "Webhook signature verification is disabled. This allows unauthenticated "
+            "requests and is a CRITICAL security risk in production. "
+            "Set HUBSPOT_WEBHOOK_SECRET immediately or risk unauthorized access."
+        )
+        # In production, you may want to: raise ValueError("Webhook secret required")
         return
+    
     headers = {k.lower(): v for k, v in (event.get("headers") or {}).items()}
     signature = headers.get("x-hubspot-signature-v3", "")
+    
     if not signature:
-        logger.warning("Missing HubSpot signature header — proceeding without verification")
-        return
-    body = (event.get("body") or "").encode("utf-8")
+        logger.error("Missing HubSpot signature header in webhook request")
+        raise ValueError("Missing required webhook signature header")
+    
+    # Get the raw body for signature verification
+    body = event.get("body", "")
+    if event.get("isBase64Encoded"):
+        # Decode for signature verification - the caller will decode again for parsing
+        body = base64.b64decode(body)
+    else:
+        body = body.encode("utf-8") if isinstance(body, str) else body
+    
     hubspot = HubSpotClient()
     if not hubspot.verify_webhook_signature(body, signature, secret):
+        logger.error("Invalid HubSpot webhook signature - possible forgery attempt")
         raise ValueError("Invalid HubSpot webhook signature")
 
 
