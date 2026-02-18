@@ -228,12 +228,33 @@ sam local invoke HubSpotToPartnerCentralFunction \
 
 ---
 
+## Additional Features
+
+This integration includes advanced features for enhanced bidirectional sync. See **[FEATURES.md](FEATURES.md)** for the original 5 advanced features and **[NEW-FEATURES.md](NEW-FEATURES.md)** for the 4 newest additions:
+
+### New Bidirectional Features (See NEW-FEATURES.md)
+
+1. **HubSpot Deal Update Sync** — Real-time sync of HubSpot deal property changes to Partner Central
+2. **Solution Management API** — List, search, and browse Partner Central solutions via REST API
+3. **Engagement Resource Snapshot Sync** — Auto-sync AWS resources (whitepapers, case studies) to HubSpot deals
+4. **Smart Notification System** — Intelligent alerts for critical Partner Central events (engagement scores, review status, seller assignments)
+
+### Original Advanced Features (See FEATURES.md)
+
+1. **Opportunity Submission to AWS** — Submit opportunities for co-sell review
+2. **AWS Opportunity Summary Sync** — Sync engagement scores and AWS feedback
+3. **EventBridge Real-Time Event Handling** — Instant invitation acceptance and updates
+4. **Reverse Sync** — Partner Central → HubSpot updates
+5. **Multi-Solution Auto-Association** — Intelligent solution matching and linking
+
+---
+
 ## Extending the Integration
 
 **Add more fields**: Edit `src/common/mappers.py` — both mapping functions are documented and straightforward to extend.
 
 **Change the poll interval**: Update `InvitationPollIntervalMinutes` in `samconfig.toml` and redeploy.
 
-**Add deal update sync**: Subscribe to `deal.propertyChange` in HubSpot and extend the webhook handler to call `UpdateOpportunity`.
+**Add custom notifications**: Extend `src/smart_notifications/handler.py` to add custom notification rules.
 
-**Trigger on SNS/EventBridge instead of polling**: Replace the EventBridge schedule with an SNS topic subscription if AWS sends Partner Central events to your account.
+**Integrate with Slack/Email**: Configure the SNS topic ARN in `template-new-features.yaml` to send notifications externally.
