@@ -163,6 +163,7 @@ def test_company_property_change_syncs_to_opportunity(
 
 def test_company_with_no_deals_skips_sync(
     mock_hubspot_client,
+    mock_pc_client,
     sample_company_webhook,
     sample_company
 ):
@@ -185,6 +186,7 @@ def test_company_with_no_deals_skips_sync(
 
 def test_company_deal_without_opportunity_skips_sync(
     mock_hubspot_client,
+    mock_pc_client,
     sample_company_webhook,
     sample_company,
     sample_deal
@@ -277,6 +279,7 @@ def test_industry_mapping():
 
 def test_company_not_found_returns_404(
     mock_hubspot_client,
+    mock_pc_client,
     sample_company_webhook
 ):
     """Test that missing company returns 404."""

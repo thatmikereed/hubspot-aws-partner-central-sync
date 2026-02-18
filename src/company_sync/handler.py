@@ -166,18 +166,21 @@ def lambda_handler(event: dict, context: dict) -> dict:
                 company_props = company.get("properties", {})
                 customer_account = _map_company_to_partner_central_account(company_props)
                 
+                # Build customer object
+                customer = {
+                    "Account": customer_account
+                }
+                
                 # Preserve existing contacts
                 existing_customer = current_opportunity.get("Customer", {})
                 if "Contacts" in existing_customer:
-                    customer_account["Contacts"] = existing_customer["Contacts"]
+                    customer["Contacts"] = existing_customer["Contacts"]
                 
                 # Update the opportunity
                 update_payload = {
                     "Catalog": "AWS",
                     "Identifier": opportunity_id,
-                    "Customer": {
-                        "Account": customer_account
-                    },
+                    "Customer": customer,
                     "LifeCycle": current_opportunity.get("LifeCycle", {}),
                     "Project": current_opportunity.get("Project", {}),
                 }

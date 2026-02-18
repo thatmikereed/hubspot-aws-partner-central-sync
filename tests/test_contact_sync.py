@@ -145,6 +145,7 @@ def test_contact_email_change_syncs_to_opportunity(
 
 def test_contact_with_no_deals_skips_sync(
     mock_hubspot_client,
+    mock_pc_client,
     sample_contact_webhook,
     sample_contact
 ):
@@ -167,6 +168,7 @@ def test_contact_with_no_deals_skips_sync(
 
 def test_contact_deal_without_opportunity_skips_sync(
     mock_hubspot_client,
+    mock_pc_client,
     sample_contact_webhook,
     sample_contact,
     sample_deal
@@ -226,7 +228,7 @@ def test_map_contacts_to_partner_central():
     assert result[0]["Email"] == "john@example.com"
     assert result[0]["FirstName"] == "John"
     assert result[0]["LastName"] == "Doe"
-    assert result[0]["Phone"] == "+1555-1234"  # Phone should be sanitized
+    assert result[0]["Phone"] == "+15551234"  # Phone should be sanitized (dashes removed)
     assert result[0]["BusinessTitle"] == "CTO"
     
     # Second contact with minimal fields
@@ -241,28 +243,29 @@ def test_sanitize_phone():
     """Test phone number sanitization."""
     from contact_sync.handler import _sanitize_phone
     
-    # Valid phone with country code
-    assert _sanitize_phone("+1-555-1234") == "+1-555-1234"
+    # Valid phone with country code (dashes are removed)
+    assert _sanitize_phone("+1-555-1234") == "+15551234"
     
     # Phone without country code (assumes US)
-    assert _sanitize_phone("555-1234") == "+1555-1234"
+    assert _sanitize_phone("555-1234") == "+15551234"
     
-    # International phone
+    # International phone (dashes/spaces removed)
     assert _sanitize_phone("+44 20 1234 5678") == "+442012345678"
     
     # None/empty
     assert _sanitize_phone(None) is None
     assert _sanitize_phone("") is None
     
-    # Too short
-    assert _sanitize_phone("123") is None
+    # Too short (less than 4 total chars including country code)
+    assert _sanitize_phone("1") is None
     
-    # Too long
+    # Too long (more than 16 chars)
     assert _sanitize_phone("12345678901234567890") is None
 
 
 def test_contact_not_found_returns_404(
     mock_hubspot_client,
+    mock_pc_client,
     sample_contact_webhook
 ):
     """Test that missing contact returns 404."""
