@@ -9,6 +9,7 @@ or via: from common.mappers import ...
 
 import sys
 import os
+import importlib.util  # noqa: E402
 
 # Import from parent directory to avoid circular imports
 # We need to import from common.mappers (the file), not common.mappers (the package)
@@ -18,10 +19,11 @@ if parent_dir not in sys.path:
 
 # Import specific functions we want to expose
 # Note: This imports from the mappers.py file, not the mappers/ directory
-import importlib.util
 
 mappers_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "mappers.py")
 spec = importlib.util.spec_from_file_location("_mappers_module", mappers_file)
+if spec is None or spec.loader is None:
+    raise ImportError("Failed to load mappers module")
 _mappers = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(_mappers)
 

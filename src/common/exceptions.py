@@ -3,11 +3,13 @@ Custom exception classes for sync operations.
 Provides structured error handling across all handlers.
 """
 
+from typing import Any, Optional
+
 
 class SyncException(Exception):
     """Base exception for all sync operations"""
 
-    def __init__(self, message: str, details: dict = None):
+    def __init__(self, message: str, details: Optional[dict] = None):
         super().__init__(message)
         self.details = details or {}
 

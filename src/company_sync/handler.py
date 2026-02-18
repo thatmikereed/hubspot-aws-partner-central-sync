@@ -12,9 +12,7 @@ Trigger: HubSpot webhook (company.propertyChange)
 Refactored to use BaseLambdaHandler pattern for consistent error handling and client initialization.
 """
 
-from typing import Dict, Any
 from common.base_handler import BaseLambdaHandler
-
 
 # Industry mapping from HubSpot to Partner Central
 HUBSPOT_INDUSTRY_TO_PC = {
@@ -110,7 +108,9 @@ class CompanySyncHandler(BaseLambdaHandler):
 
         for deal_id in associated_deals:
             try:
-                result = self._sync_deal(deal_id, company, property_name, property_value)
+                result = self._sync_deal(
+                    deal_id, company, property_name, property_value
+                )
                 if result["synced"]:
                     synced_count += 1
                 else:
@@ -135,7 +135,9 @@ class CompanySyncHandler(BaseLambdaHandler):
         self.logger.info(f"Company sync complete: {result}")
         return self._success_response(result)
 
-    def _sync_deal(self, deal_id: str, company: dict, property_name: str, property_value: str) -> dict:
+    def _sync_deal(
+        self, deal_id: str, company: dict, property_name: str, property_value: str
+    ) -> dict:
         """
         Sync a single deal's opportunity with company information.
 
@@ -168,9 +170,7 @@ class CompanySyncHandler(BaseLambdaHandler):
                 Catalog="AWS", Identifier=opportunity_id
             )
         except Exception as e:
-            self.logger.error(
-                f"Failed to get opportunity {opportunity_id}: {e}"
-            )
+            self.logger.error(f"Failed to get opportunity {opportunity_id}: {e}")
             return {"synced": False, "error": f"Deal {deal_id}: {str(e)}"}
 
         # Build updated customer account information
@@ -198,9 +198,7 @@ class CompanySyncHandler(BaseLambdaHandler):
         if "Title" in update_payload["Project"]:
             del update_payload["Project"]["Title"]
 
-        self.logger.info(
-            f"Updating opportunity {opportunity_id} with new company info"
-        )
+        self.logger.info(f"Updating opportunity {opportunity_id} with new company info")
         self.pc_client.update_opportunity(**update_payload)
 
         # Add note to HubSpot deal
@@ -216,12 +214,11 @@ Company information for this opportunity has been updated in AWS Partner Central
 
         # Update sync timestamp
         self.hubspot_client.update_deal(
-            deal_id, {"aws_contact_company_last_sync": self.hubspot_client.now_timestamp_ms()}
+            deal_id,
+            {"aws_contact_company_last_sync": self.hubspot_client.now_timestamp_ms()},
         )
 
-        self.logger.info(
-            f"Successfully synced company to opportunity {opportunity_id}"
-        )
+        self.logger.info(f"Successfully synced company to opportunity {opportunity_id}")
         return {"synced": True}
 
 
