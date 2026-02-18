@@ -170,6 +170,11 @@ def validate_amount(amount: Any) -> Optional[float]:
     
     Returns:
         Validated amount as float or None if invalid
+    
+    Notes:
+        Maximum amount is set to 1 trillion USD to prevent overflow issues
+        and catch obvious data entry errors. This limit is configurable if
+        needed for specific use cases (e.g., very large enterprise deals).
     """
     if amount is None or amount == "":
         return None
@@ -181,8 +186,11 @@ def validate_amount(amount: Any) -> Optional[float]:
             logger.warning("Negative amount provided, converting to None")
             return None
         
-        if amount_float > 1_000_000_000_000:  # 1 trillion limit
-            logger.warning(f"Amount {amount_float} exceeds reasonable limit")
+        # Sanity limit to prevent overflow and catch data entry errors
+        # Adjust this if your business regularly handles deals > $1T
+        MAX_REASONABLE_AMOUNT = 1_000_000_000_000  # 1 trillion USD
+        if amount_float > MAX_REASONABLE_AMOUNT:
+            logger.warning(f"Amount {amount_float} exceeds reasonable limit of {MAX_REASONABLE_AMOUNT}")
             return None
         
         return amount_float

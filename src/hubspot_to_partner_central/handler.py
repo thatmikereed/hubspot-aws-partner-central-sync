@@ -22,6 +22,7 @@ Both event types respect Partner Central's review-status rules:
   - If ReviewStatus is Submitted or In-Review, all updates are blocked.
 """
 
+import base64
 import json
 import logging
 import os
@@ -91,7 +92,6 @@ def lambda_handler(event: dict, context) -> dict:
     try:
         body = event.get("body", "")
         if event.get("isBase64Encoded"):
-            import base64
             body = base64.b64decode(body).decode("utf-8")
         webhook_events = json.loads(body) if isinstance(body, str) else body
     except (json.JSONDecodeError, Exception) as exc:
@@ -361,7 +361,6 @@ def _verify_signature(event: dict) -> None:
     
     body = event.get("body", "")
     if event.get("isBase64Encoded"):
-        import base64
         body = base64.b64decode(body)
     else:
         body = body.encode("utf-8") if isinstance(body, str) else body
