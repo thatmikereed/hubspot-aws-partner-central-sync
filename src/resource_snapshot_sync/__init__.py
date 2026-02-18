@@ -1,0 +1,1 @@
+"""Resource snapshot sync module."""
