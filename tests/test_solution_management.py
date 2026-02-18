@@ -123,6 +123,9 @@ def test_search_solutions(mock_pc_client, sample_solutions):
     """Test searching solutions by keyword."""
     from solution_management.handler import lambda_handler
     
+    # Filter to only database solutions for this test
+    database_solutions = [s for s in sample_solutions if "database" in s["Name"].lower()]
+    
     mock_pc_client.list_solutions.return_value = {
         "SolutionSummaries": sample_solutions
     }

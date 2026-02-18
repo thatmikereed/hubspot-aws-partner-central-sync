@@ -134,6 +134,10 @@ def _search_solutions(query_params: dict) -> dict:
     - q: Search query (searches name and description)
     - category: Filter by category
     - limit: Max results (default: 50, max: 100)
+    
+    Note: Partner Central ListSolutions doesn't support text search,
+    so we fetch solutions in batches and filter client-side. For large
+    solution catalogs, this may take a few seconds.
     """
     query = query_params.get("q", "").lower()
     if not query:
@@ -142,15 +146,15 @@ def _search_solutions(query_params: dict) -> dict:
     category_filter = query_params.get("category")
     limit = min(int(query_params.get("limit", 50)), 100)
     
-    # Get all solutions and filter client-side
-    # Note: Partner Central ListSolutions doesn't support text search,
-    # so we fetch all and filter locally
+    # Get solutions in batches and filter client-side
     pc_client = get_partner_central_client()
     
     all_solutions = []
     next_token = None
+    max_fetches = 5  # Limit to 500 solutions (5 * 100) to prevent excessive API calls
+    fetch_count = 0
     
-    while True:
+    while fetch_count < max_fetches:
         list_params = {
             "Catalog": PARTNER_CENTRAL_CATALOG,
             "MaxResults": 100,
@@ -167,6 +171,8 @@ def _search_solutions(query_params: dict) -> dict:
         all_solutions.extend(response.get("SolutionSummaries", []))
         
         next_token = response.get("NextToken")
+        fetch_count += 1
+        
         if not next_token:
             break
     
@@ -195,6 +201,7 @@ def _search_solutions(query_params: dict) -> dict:
         "solutions": matching_solutions,
         "count": len(matching_solutions),
         "query": query,
+        "totalSolutionsFetched": len(all_solutions),
     })
 
 

@@ -710,6 +710,11 @@ def hubspot_deal_to_partner_central_updates(
     
     Returns:
         Update payload dict or None if no update is needed
+        
+    Note:
+        Caller must verify the deal has an aws_opportunity_id before calling.
+        This function only builds the update payload and does not validate
+        that the deal is linked to a Partner Central opportunity.
     """
     props = deal.get("properties", {})
     
