@@ -41,6 +41,7 @@ def lambda_handler(event: dict, context) -> dict:
         body = event.get("body", "")
         if event.get("isBase64Encoded"):
             import base64
+
             body = base64.b64decode(body).decode("utf-8")
         webhook_events = json.loads(body) if isinstance(body, str) else body
     except (json.JSONDecodeError, Exception) as exc:
@@ -62,9 +63,13 @@ def lambda_handler(event: dict, context) -> dict:
 
         try:
             if "deal.creation" in event_type:
-                result = _handle_deal_creation(object_id, hubspot, gcp_client, partner_id)
+                result = _handle_deal_creation(
+                    object_id, hubspot, gcp_client, partner_id
+                )
             elif "deal.propertyChange" in event_type:
-                result = _handle_deal_update(object_id, webhook_event, hubspot, gcp_client, partner_id)
+                result = _handle_deal_update(
+                    object_id, webhook_event, hubspot, gcp_client, partner_id
+                )
             else:
                 logger.debug("Skipping unhandled event type: %s", event_type)
                 result = None
@@ -73,8 +78,12 @@ def lambda_handler(event: dict, context) -> dict:
                 processed.append(result)
 
         except Exception as exc:
-            logger.exception("Error processing %s for deal %s: %s", event_type, object_id, exc)
-            errors.append({"dealId": object_id, "eventType": event_type, "error": str(exc)})
+            logger.exception(
+                "Error processing %s for deal %s: %s", event_type, object_id, exc
+            )
+            errors.append(
+                {"dealId": object_id, "eventType": event_type, "error": str(exc)}
+            )
 
     return _response(
         200,
@@ -92,9 +101,12 @@ def lambda_handler(event: dict, context) -> dict:
 # deal.creation handler
 # ---------------------------------------------------------------------------
 
-def _handle_deal_creation(deal_id: str, hubspot: HubSpotClient, gcp_client, partner_id: str) -> dict | None:
+
+def _handle_deal_creation(
+    deal_id: str, hubspot: HubSpotClient, gcp_client, partner_id: str
+) -> dict | None:
     """
-    Fetch the HubSpot deal, check for #GCP tag, create a GCP Lead, 
+    Fetch the HubSpot deal, check for #GCP tag, create a GCP Lead,
     then create a GCP Opportunity linked to that lead.
     Writes the Opportunity ID back to HubSpot.
     """
@@ -104,41 +116,59 @@ def _handle_deal_creation(deal_id: str, hubspot: HubSpotClient, gcp_client, part
     logger.info("Processing deal creation %s: '%s'", deal_id, deal_name)
 
     if GCP_TRIGGER_TAG.lower() not in deal_name.lower():
-        logger.info("Deal '%s' does not contain %s — skipping", deal_name, GCP_TRIGGER_TAG)
+        logger.info(
+            "Deal '%s' does not contain %s — skipping", deal_name, GCP_TRIGGER_TAG
+        )
         return None
 
     # Idempotency: skip if already synced
     existing_gcp_id = deal.get("properties", {}).get("gcp_opportunity_id")
     if existing_gcp_id:
-        logger.info("Deal %s already synced to GCP opportunity %s", deal_id, existing_gcp_id)
+        logger.info(
+            "Deal %s already synced to GCP opportunity %s", deal_id, existing_gcp_id
+        )
         return None
 
     # Step 1: Create Lead in GCP Partners API
     lead_payload = hubspot_deal_to_gcp_lead(deal, company, contacts)
-    logger.info("Creating GCP lead for deal %s with payload keys: %s",
-                deal_id, list(lead_payload.keys()))
+    logger.info(
+        "Creating GCP lead for deal %s with payload keys: %s",
+        deal_id,
+        list(lead_payload.keys()),
+    )
 
-    lead_response = gcp_client.partners().leads().create(
-        parent=f"partners/{partner_id}",
-        body=lead_payload
-    ).execute()
+    lead_response = (
+        gcp_client.partners()
+        .leads()
+        .create(parent=f"partners/{partner_id}", body=lead_payload)
+        .execute()
+    )
 
     lead_name = lead_response.get("name", "")
     logger.info("Created GCP lead %s for deal %s", lead_name, deal_id)
 
     # Step 2: Create Opportunity linked to the Lead
-    opportunity_payload = hubspot_deal_to_gcp_opportunity(deal, lead_name, company, contacts)
-    logger.info("Creating GCP opportunity for deal %s with payload keys: %s",
-                deal_id, list(opportunity_payload.keys()))
+    opportunity_payload = hubspot_deal_to_gcp_opportunity(
+        deal, lead_name, company, contacts
+    )
+    logger.info(
+        "Creating GCP opportunity for deal %s with payload keys: %s",
+        deal_id,
+        list(opportunity_payload.keys()),
+    )
 
-    opportunity_response = gcp_client.partners().opportunities().create(
-        parent=f"partners/{partner_id}",
-        body=opportunity_payload
-    ).execute()
+    opportunity_response = (
+        gcp_client.partners()
+        .opportunities()
+        .create(parent=f"partners/{partner_id}", body=opportunity_payload)
+        .execute()
+    )
 
     opportunity_name = opportunity_response.get("name", "")
     # Extract ID from name like "partners/12345/opportunities/67890"
-    opportunity_id = opportunity_name.split("/")[-1] if "/" in opportunity_name else opportunity_name
+    opportunity_id = (
+        opportunity_name.split("/")[-1] if "/" in opportunity_name else opportunity_name
+    )
     logger.info("Created GCP opportunity %s for deal %s", opportunity_id, deal_id)
 
     # Write GCP IDs back to HubSpot
@@ -166,8 +196,13 @@ def _handle_deal_creation(deal_id: str, hubspot: HubSpotClient, gcp_client, part
 # deal.propertyChange handler
 # ---------------------------------------------------------------------------
 
+
 def _handle_deal_update(
-    deal_id: str, webhook_event: dict, hubspot: HubSpotClient, gcp_client, partner_id: str
+    deal_id: str,
+    webhook_event: dict,
+    hubspot: HubSpotClient,
+    gcp_client,
+    partner_id: str,
 ) -> dict | None:
     """
     Sync a HubSpot deal property change to GCP Partners API.
@@ -178,7 +213,7 @@ def _handle_deal_update(
     # Only sync deals that are already in GCP
     opportunity_id = props.get("gcp_opportunity_id")
     opportunity_name = props.get("gcp_opportunity_name")
-    
+
     if not opportunity_id or not opportunity_name:
         logger.debug("Deal %s has no gcp_opportunity_id — skipping update", deal_id)
         return None
@@ -186,7 +221,9 @@ def _handle_deal_update(
     # The deal must still have #GCP to stay in sync scope
     deal_name = props.get("dealname", "")
     if GCP_TRIGGER_TAG.lower() not in deal_name.lower():
-        logger.info("Deal %s no longer contains %s — skipping update", deal_id, GCP_TRIGGER_TAG)
+        logger.info(
+            "Deal %s no longer contains %s — skipping update", deal_id, GCP_TRIGGER_TAG
+        )
         return None
 
     changed_property = webhook_event.get("propertyName", "")
@@ -195,7 +232,9 @@ def _handle_deal_update(
     # Fetch current GCP opportunity state
     current_gcp_opp = _get_gcp_opportunity(gcp_client, opportunity_name)
     if not current_gcp_opp:
-        logger.warning("Could not fetch GCP opportunity %s — skipping update", opportunity_id)
+        logger.warning(
+            "Could not fetch GCP opportunity %s — skipping update", opportunity_id
+        )
         return None
 
     # Build the update payload
@@ -217,10 +256,9 @@ def _handle_deal_update(
 
     # Send the update via PATCH
     gcp_client.partners().opportunities().patch(
-        name=opportunity_name,
-        body=update_payload
+        name=opportunity_name, body=update_payload
     ).execute()
-    
+
     logger.info("Updated GCP opportunity %s from deal %s", opportunity_id, deal_id)
 
     hubspot.update_deal(deal_id, {"gcp_sync_status": "synced"})
@@ -238,12 +276,13 @@ def _handle_deal_update(
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _get_gcp_opportunity(gcp_client, opportunity_name: str) -> dict | None:
     """Fetch a GCP opportunity; return None on failure."""
     try:
-        return gcp_client.partners().opportunities().get(
-            name=opportunity_name
-        ).execute()
+        return (
+            gcp_client.partners().opportunities().get(name=opportunity_name).execute()
+        )
     except Exception as exc:
         logger.error("Failed to fetch GCP opportunity %s: %s", opportunity_name, exc)
         return None
@@ -257,7 +296,9 @@ def _verify_signature(event: dict) -> None:
     headers = {k.lower(): v for k, v in (event.get("headers") or {}).items()}
     signature = headers.get("x-hubspot-signature-v3", "")
     if not signature:
-        logger.warning("Missing HubSpot signature header — proceeding without verification")
+        logger.warning(
+            "Missing HubSpot signature header — proceeding without verification"
+        )
         return
     body = (event.get("body") or "").encode("utf-8")
     hubspot = HubSpotClient()
