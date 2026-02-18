@@ -42,8 +42,7 @@ from common.validators import (
     sanitize_deal_name,
 )
 
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+logger = logging.getLogger(__name__)
 
 AWS_TRIGGER_TAG = "#AWS"
 
