@@ -1,0 +1,1 @@
+"""Smart notifications module."""

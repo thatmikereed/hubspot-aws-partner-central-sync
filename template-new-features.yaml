@@ -1,0 +1,204 @@
+# ============================================================
+# ADDITIONAL RESOURCES FOR NEW BIDIRECTIONAL FEATURES
+# Append these to template.yaml or template-additions.yaml
+# ============================================================
+
+Parameters:
+  # Notification settings
+  EngagementScoreThreshold:
+    Type: Number
+    Default: 15
+    Description: Notify when engagement score changes by this many points
+  
+  HighEngagementScore:
+    Type: Number
+    Default: 80
+    Description: Score threshold for high-priority notifications
+  
+  NotificationSNSTopicArn:
+    Type: String
+    Default: ""
+    Description: Optional SNS topic ARN for external notifications (Slack, email)
+  
+  # Resource sync settings
+  ResourceSyncInterval:
+    Type: Number
+    Default: 240
+    MinValue: 1
+    Description: How often (in minutes) to sync AWS resources (default 4 hours). CloudWatch supports any value >= 1 minute. Common values are 5, 10, 15, 30, 60, 120, 240 minutes.
+
+Conditions:
+  HasSNSTopic: !Not [!Equals [!Ref NotificationSNSTopicArn, ""]]
+
+Resources:
+  # ========== 1. HubSpot Deal Update Sync Function ==========
+  HubSpotDealUpdateSyncFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "hubspot-deal-update-sync-${Environment}"
+      CodeUri: src/hubspot_deal_update_sync/
+      Handler: handler.lambda_handler
+      Description: Sync HubSpot deal property changes to Partner Central (bidirectional)
+      Layers:
+        - !Ref CommonLayer
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action: sts:AssumeRole
+              Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/HubSpotPartnerCentralServiceRole"
+      Events:
+        DealUpdateWebhook:
+          Type: Api
+          Properties:
+            RestApiId: !Ref WebhookApi
+            Path: /webhook/deal-update
+            Method: POST
+
+  # ========== 2. Solution Management Function ==========
+  SolutionManagementFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "solution-management-${Environment}"
+      CodeUri: src/solution_management/
+      Handler: handler.lambda_handler
+      Description: API for listing and searching Partner Central solutions
+      Timeout: 30
+      Layers:
+        - !Ref CommonLayer
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action: sts:AssumeRole
+              Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/HubSpotPartnerCentralServiceRole"
+      Events:
+        ListSolutions:
+          Type: Api
+          Properties:
+            RestApiId: !Ref WebhookApi
+            Path: /solutions
+            Method: GET
+        SearchSolutions:
+          Type: Api
+          Properties:
+            RestApiId: !Ref WebhookApi
+            Path: /solutions/search
+            Method: GET
+        GetSolution:
+          Type: Api
+          Properties:
+            RestApiId: !Ref WebhookApi
+            Path: /solutions/{solutionId}
+            Method: GET
+
+  # ========== 3. Resource Snapshot Sync Function ==========
+  ResourceSnapshotSyncFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "resource-snapshot-sync-${Environment}"
+      CodeUri: src/resource_snapshot_sync/
+      Handler: handler.lambda_handler
+      Description: Sync AWS engagement resources (whitepapers, case studies) to HubSpot
+      Timeout: 300
+      Layers:
+        - !Ref CommonLayer
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action: sts:AssumeRole
+              Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/HubSpotPartnerCentralServiceRole"
+      Events:
+        ScheduledSync:
+          Type: Schedule
+          Properties:
+            Schedule: !Sub "rate(${ResourceSyncInterval} minutes)"
+            Name: !Sub "resource-snapshot-sync-${Environment}"
+            Description: Sync AWS resources to HubSpot deals
+            Enabled: true
+
+  # ========== 4. Smart Notifications Function ==========
+  SmartNotificationsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "smart-notifications-${Environment}"
+      CodeUri: src/smart_notifications/
+      Handler: handler.lambda_handler
+      Description: Intelligent notifications for critical Partner Central events
+      Timeout: 300
+      Layers:
+        - !Ref CommonLayer
+      Environment:
+        Variables:
+          ENGAGEMENT_SCORE_THRESHOLD: !Ref EngagementScoreThreshold
+          HIGH_ENGAGEMENT_SCORE: !Ref HighEngagementScore
+          NOTIFICATION_SNS_TOPIC_ARN: !Ref NotificationSNSTopicArn
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action: sts:AssumeRole
+              Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/HubSpotPartnerCentralServiceRole"
+        - !If
+          - HasSNSTopic
+          - Statement:
+              - Effect: Allow
+                Action: sns:Publish
+                Resource: !Ref NotificationSNSTopicArn
+          - !Ref "AWS::NoValue"
+      Events:
+        ScheduledCheck:
+          Type: Schedule
+          Properties:
+            Schedule: rate(30 minutes)
+            Name: !Sub "smart-notifications-check-${Environment}"
+            Description: Check for notification-worthy Partner Central events
+            Enabled: true
+        EventBridgeEvents:
+          Type: EventBridgeRule
+          Properties:
+            Pattern:
+              source:
+                - aws.partnercentral-selling
+              detail-type:
+                - Opportunity Updated
+                - Engagement Invitation Created
+
+  # ========== CloudWatch Log Groups ==========
+  HubSpotDealUpdateSyncLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/hubspot-deal-update-sync-${Environment}"
+      RetentionInDays: 30
+
+  SolutionManagementLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/solution-management-${Environment}"
+      RetentionInDays: 30
+
+  ResourceSnapshotSyncLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/resource-snapshot-sync-${Environment}"
+      RetentionInDays: 30
+
+  SmartNotificationsLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/smart-notifications-${Environment}"
+      RetentionInDays: 30
+
+Outputs:
+  DealUpdateWebhookUrl:
+    Description: Webhook URL for HubSpot deal.propertyChange subscriptions
+    Value: !Sub "https://${WebhookApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/webhook/deal-update"
+
+  SolutionsApiUrl:
+    Description: API endpoint for solution management
+    Value: !Sub "https://${WebhookApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/solutions"
+
+  SmartNotificationsFunctionArn:
+    Description: ARN of smart notifications function
+    Value: !GetAtt SmartNotificationsFunction.Arn

@@ -337,6 +337,77 @@ class HubSpotClient:
                     "Project.ExpectedCustomerSpend[0].Amount in Partner Central."
                 ),
             },
+            # New properties for enhanced features
+            {
+                "name": "aws_engagement_score",
+                "label": "AWS Engagement Score",
+                "type": "number",
+                "fieldType": "number",
+                "groupName": "dealinformation",
+                "description": (
+                    "AWS's engagement score for this opportunity (0-100). "
+                    "Higher scores indicate stronger AWS interest in co-selling."
+                ),
+            },
+            {
+                "name": "aws_submission_date",
+                "label": "AWS Submission Date",
+                "type": "datetime",
+                "fieldType": "date",
+                "groupName": "dealinformation",
+                "description": "Date when the opportunity was submitted to AWS for review",
+            },
+            {
+                "name": "aws_involvement_type",
+                "label": "AWS Involvement Type",
+                "type": "string",
+                "fieldType": "text",
+                "groupName": "dealinformation",
+                "description": "Co-Sell or For Visibility Only",
+            },
+            {
+                "name": "aws_visibility",
+                "label": "AWS Visibility",
+                "type": "string",
+                "fieldType": "text",
+                "groupName": "dealinformation",
+                "description": "Full or Limited - how much data AWS can see",
+            },
+            {
+                "name": "aws_seller_name",
+                "label": "AWS Seller Name",
+                "type": "string",
+                "fieldType": "text",
+                "groupName": "dealinformation",
+                "description": "Name of the AWS seller assigned to this opportunity",
+            },
+            {
+                "name": "aws_next_steps",
+                "label": "AWS Recommended Next Steps",
+                "type": "string",
+                "fieldType": "textarea",
+                "groupName": "dealinformation",
+                "description": "Next steps recommended by AWS",
+            },
+            {
+                "name": "aws_last_summary_sync",
+                "label": "AWS Last Summary Sync",
+                "type": "datetime",
+                "fieldType": "date",
+                "groupName": "dealinformation",
+                "description": "Last time AWS Opportunity Summary was fetched",
+            },
+            {
+                "name": "aws_solution_ids",
+                "label": "AWS Solution IDs (Override)",
+                "type": "string",
+                "fieldType": "text",
+                "groupName": "dealinformation",
+                "description": (
+                    "Comma-separated Solution IDs to associate with this opportunity. "
+                    "If blank, solutions are auto-matched based on use case."
+                ),
+            },
         ]
 
         url = f"{HUBSPOT_API_BASE}/crm/v3/properties/deals"

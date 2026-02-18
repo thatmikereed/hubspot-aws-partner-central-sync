@@ -36,6 +36,11 @@ from common.mappers import (
     hubspot_deal_to_partner_central,
     hubspot_deal_to_partner_central_update,
 )
+from common.solution_matcher import (
+    match_solutions,
+    associate_multiple_solutions,
+    get_cached_solutions,
+)
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -145,14 +150,35 @@ def _handle_deal_creation(deal_id: str, hubspot: HubSpotClient, pc_client) -> di
     opportunity_id = pc_response.get("Id", "")
     logger.info("Created PC opportunity %s for deal %s", opportunity_id, deal_id)
 
-    # Associate the configured solution (required before submission)
+    # Associate solutions (single from env var, or multiple via auto-matching)
     solution_id = os.environ.get("PARTNER_CENTRAL_SOLUTION_ID")
+    associated_solutions = []
+    
     if solution_id:
+        # Single solution from environment variable (backward compatibility)
         _associate_solution(pc_client, opportunity_id, solution_id)
+        associated_solutions = [solution_id]
     else:
+        # Multi-solution auto-matching
+        try:
+            available_solutions = get_cached_solutions(pc_client)
+            matched_solution_ids = match_solutions(deal, available_solutions)
+            
+            if matched_solution_ids:
+                result = associate_multiple_solutions(pc_client, opportunity_id, matched_solution_ids)
+                associated_solutions = result["succeeded"]
+                logger.info("Associated %d solutions with opportunity %s",
+                           len(associated_solutions), opportunity_id)
+            else:
+                logger.warning("No solutions matched for deal %s", deal_id)
+        except Exception as exc:
+            logger.warning("Solution auto-matching failed: %s", exc)
+
+    if not associated_solutions:
         logger.warning(
-            "PARTNER_CENTRAL_SOLUTION_ID not set — skipping solution association. "
-            "The opportunity cannot be submitted to AWS until a solution is associated."
+            "No solutions associated with opportunity %s. "
+            "Set PARTNER_CENTRAL_SOLUTION_ID or add aws_solution_ids to the deal.",
+            opportunity_id
         )
 
     # Write the PC Opportunity ID and canonical title back to HubSpot
@@ -171,7 +197,8 @@ def _handle_deal_creation(deal_id: str, hubspot: HubSpotClient, pc_client) -> di
         "hubspotDealId": deal_id,
         "dealName": deal_name,
         "partnerCentralOpportunityId": opportunity_id,
-        "solutionAssociated": bool(solution_id),
+        "solutionsAssociated": len(associated_solutions),
+        "solutionIds": associated_solutions,
     }
 
 
