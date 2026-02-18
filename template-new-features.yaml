@@ -24,7 +24,8 @@ Parameters:
   ResourceSyncInterval:
     Type: Number
     Default: 240
-    Description: How often (in minutes) to sync AWS resources (default 4 hours). Valid CloudWatch rate values are 5, 10, 15, 30, or >= 60 minutes.
+    MinValue: 1
+    Description: How often (in minutes) to sync AWS resources (default 4 hours). CloudWatch supports any value >= 1 minute. Common values are 5, 10, 15, 30, 60, 120, 240 minutes.
 
 Conditions:
   HasSNSTopic: !Not [!Equals [!Ref NotificationSNSTopicArn, ""]]

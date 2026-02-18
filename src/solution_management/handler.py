@@ -135,10 +135,11 @@ def _search_solutions(query_params: dict) -> dict:
     - category: Filter by category
     - limit: Max results (default: 50, max: 100)
     
-    Note: Partner Central ListSolutions doesn't support text search,
-    so we fetch solutions in batches and filter client-side. Search is
-    limited to the first 500 solutions (5 batches of 100) to prevent
-    excessive API calls. For large catalogs, this may take a few seconds.
+    Performance note: Partner Central ListSolutions doesn't support text search,
+    so we fetch solutions in batches and filter client-side. Search is limited
+    to the first 500 solutions (5 API calls @ 100 solutions each) to balance
+    completeness with performance. Typical response time: 2-8 seconds depending
+    on Partner Central API latency.
     """
     query = query_params.get("q", "").lower()
     if not query:
