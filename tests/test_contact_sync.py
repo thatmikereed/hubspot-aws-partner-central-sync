@@ -8,321 +8,286 @@ from unittest.mock import MagicMock, patch
 
 
 @pytest.fixture
-def mock_hubspot_client():
-    """Mock HubSpotClient."""
-    with patch('contact_sync.handler.HubSpotClient') as mock:
-        client = MagicMock()
-        mock.return_value = client
-        yield client
+def mock_handler_clients():
+    """Mock clients via BaseLambdaHandler properties."""
+    with patch("common.hubspot_client.HubSpotClient") as mock_hs, patch(
+        "common.aws_client.get_partner_central_client"
+    ) as mock_pc:
+        hs_client = MagicMock()
+        pc_client = MagicMock()
+        mock_hs.return_value = hs_client
+        mock_pc.return_value = pc_client
+        yield hs_client, pc_client
 
 
 @pytest.fixture
-def mock_pc_client():
-    """Mock Partner Central client."""
-    with patch('contact_sync.handler.get_partner_central_client') as mock:
-        client = MagicMock()
-        mock.return_value = client
-        yield client
+def sample_eventbridge_event():
+    """Sample EventBridge opportunity.updated event."""
+    return {"detail": {"opportunity": {"identifier": "O1234567890"}}}
 
 
 @pytest.fixture
-def sample_contact_webhook():
-    """Sample HubSpot contact.propertyChange webhook event."""
+def sample_manual_event():
+    """Sample manual API call event."""
+    return {"opportunityId": "O1234567890"}
+
+
+@pytest.fixture
+def sample_scheduled_event():
+    """Sample scheduled sync event (empty)."""
+    return {}
+
+
+@pytest.fixture
+def sample_pc_opportunity():
+    """Sample Partner Central opportunity with contacts."""
     return {
-        "httpMethod": "POST",
-        "body": json.dumps({
-            "objectId": "54321",
-            "propertyName": "email",
-            "propertyValue": "newemail@example.com",
-            "subscriptionType": "contact.propertyChange"
-        }),
-        "headers": {}
+        "Identifier": "O1234567890",
+        "LifeCycle": {"Stage": "Prospect"},
+        "Project": {"Title": "Test Deal #AWS"},
+        "Customer": {
+            "Account": {"CompanyName": "Test Company"},
+            "Contacts": [
+                {
+                    "Email": "john@example.com",
+                    "FirstName": "John",
+                    "LastName": "Doe",
+                    "Phone": "+15551234",
+                    "BusinessTitle": "CTO",
+                }
+            ],
+        },
+        "OpportunityTeam": [
+            {
+                "Email": "aws-seller@amazon.com",
+                "FirstName": "AWS",
+                "LastName": "Seller",
+                "BusinessTitle": "Account Manager",
+            }
+        ],
     }
 
 
 @pytest.fixture
-def sample_contact():
-    """Sample HubSpot contact object."""
-    return {
-        "id": "54321",
-        "properties": {
-            "email": "newemail@example.com",
-            "firstname": "John",
-            "lastname": "Doe",
-            "phone": "+1-555-1234",
-            "jobtitle": "CTO"
-        }
-    }
-
-
-@pytest.fixture
-def sample_deal():
+def sample_hubspot_deal():
     """Sample HubSpot deal with AWS opportunity."""
     return {
         "id": "12345",
         "properties": {
             "dealname": "Test Deal #AWS",
-            "aws_opportunity_id": "O1234567890"
-        }
-    }
-
-
-@pytest.fixture
-def sample_opportunity():
-    """Sample Partner Central opportunity."""
-    return {
-        "Id": "O1234567890",
-        "LifeCycle": {"Stage": "Prospect"},
-        "Project": {"Title": "Test Deal #AWS"},
-        "Customer": {
-            "Account": {
-                "CompanyName": "Test Company"
-            },
-            "Contacts": [
-                {
-                    "Email": "oldemail@example.com",
-                    "FirstName": "John",
-                    "LastName": "Doe"
-                }
-            ]
-        }
-    }
-
-
-def test_contact_email_change_syncs_to_opportunity(
-    mock_hubspot_client,
-    mock_pc_client,
-    sample_contact_webhook,
-    sample_contact,
-    sample_deal,
-    sample_opportunity
-):
-    """Test that contact email changes are synced to Partner Central opportunity."""
-    from contact_sync.handler import lambda_handler
-    
-    # Setup mocks
-    mock_hubspot_client.get_contact.return_value = sample_contact
-    mock_hubspot_client.get_contact_associations.return_value = ["12345"]
-    mock_hubspot_client.get_deal.return_value = sample_deal
-    mock_hubspot_client.get_deal_associations.return_value = ["54321"]
-    mock_pc_client.get_opportunity.return_value = sample_opportunity
-    mock_hubspot_client.now_timestamp_ms.return_value = 1708257600000
-    
-    # Execute
-    response = lambda_handler(sample_contact_webhook, None)
-    
-    # Verify success
-    assert response["statusCode"] == 200
-    body = json.loads(response["body"])
-    assert body["dealsSynced"] == 1
-    assert body["contactId"] == "54321"
-    
-    # Verify Partner Central was updated
-    mock_pc_client.update_opportunity.assert_called_once()
-    update_call = mock_pc_client.update_opportunity.call_args[1]
-    
-    # Check that contacts were updated
-    assert "Customer" in update_call
-    assert "Contacts" in update_call["Customer"]
-    contacts = update_call["Customer"]["Contacts"]
-    assert len(contacts) == 1
-    assert contacts[0]["Email"] == "newemail@example.com"
-    assert contacts[0]["FirstName"] == "John"
-    assert contacts[0]["LastName"] == "Doe"
-    
-    # Verify note was created
-    mock_hubspot_client.create_deal_note.assert_called_once()
-    note_text = mock_hubspot_client.create_deal_note.call_args[0][1]
-    assert "Contact Information Synced" in note_text
-    assert "email" in note_text
-    
-    # Verify sync timestamp was updated
-    mock_hubspot_client.update_deal.assert_called_once_with(
-        "12345",
-        {"aws_contact_company_last_sync": 1708257600000}
-    )
-
-
-def test_contact_with_no_deals_skips_sync(
-    mock_hubspot_client,
-    mock_pc_client,
-    sample_contact_webhook,
-    sample_contact
-):
-    """Test that contacts with no associated deals are skipped."""
-    from contact_sync.handler import lambda_handler
-    
-    # Setup mocks - no associated deals
-    mock_hubspot_client.get_contact.return_value = sample_contact
-    mock_hubspot_client.get_contact_associations.return_value = []
-    
-    # Execute
-    response = lambda_handler(sample_contact_webhook, None)
-    
-    # Verify success but no sync
-    assert response["statusCode"] == 200
-    body = json.loads(response["body"])
-    assert body["message"] == "No deals to sync"
-    assert body["contactId"] == "54321"
-
-
-def test_contact_deal_without_opportunity_skips_sync(
-    mock_hubspot_client,
-    mock_pc_client,
-    sample_contact_webhook,
-    sample_contact,
-    sample_deal
-):
-    """Test that deals without AWS opportunities are skipped."""
-    from contact_sync.handler import lambda_handler
-    
-    # Setup mocks
-    mock_hubspot_client.get_contact.return_value = sample_contact
-    mock_hubspot_client.get_contact_associations.return_value = ["12345"]
-    
-    # Deal without aws_opportunity_id
-    deal_no_opp = sample_deal.copy()
-    deal_no_opp["properties"] = {"dealname": "Test Deal"}
-    mock_hubspot_client.get_deal.return_value = deal_no_opp
-    
-    # Execute
-    response = lambda_handler(sample_contact_webhook, None)
-    
-    # Verify success but deals skipped
-    assert response["statusCode"] == 200
-    body = json.loads(response["body"])
-    assert body["dealsSynced"] == 0
-    assert body["dealsSkipped"] == 1
-
-
-def test_map_contacts_to_partner_central():
-    """Test contact mapping function."""
-    from contact_sync.handler import _map_contacts_to_partner_central
-    
-    contacts = [
-        {
-            "id": "1",
-            "properties": {
-                "email": "john@example.com",
-                "firstname": "John",
-                "lastname": "Doe",
-                "phone": "555-1234",
-                "jobtitle": "CTO"
-            }
+            "aws_opportunity_id": "O1234567890",
         },
-        {
-            "id": "2",
-            "properties": {
-                "email": "jane@example.com",
-                "firstname": "Jane",
-                "lastname": "Smith"
-            }
-        }
-    ]
-    
-    result = _map_contacts_to_partner_central(contacts)
-    
-    assert len(result) == 2
-    
-    # First contact with all fields
-    assert result[0]["Email"] == "john@example.com"
-    assert result[0]["FirstName"] == "John"
-    assert result[0]["LastName"] == "Doe"
-    assert result[0]["Phone"] == "+15551234"  # Phone should be sanitized (dashes removed)
-    assert result[0]["BusinessTitle"] == "CTO"
-    
-    # Second contact with minimal fields
-    assert result[1]["Email"] == "jane@example.com"
-    assert result[1]["FirstName"] == "Jane"
-    assert result[1]["LastName"] == "Smith"
-    assert "Phone" not in result[1]
-    assert "BusinessTitle" not in result[1]
+    }
 
 
-def test_sanitize_phone():
-    """Test phone number sanitization."""
-    from contact_sync.handler import _sanitize_phone
-    
-    # Valid phone with country code (dashes are removed)
-    assert _sanitize_phone("+1-555-1234") == "+15551234"
-    
-    # Phone without country code (assumes US)
-    assert _sanitize_phone("555-1234") == "+15551234"
-    
-    # International phone (dashes/spaces removed)
-    assert _sanitize_phone("+44 20 1234 5678") == "+442012345678"
-    
-    # None/empty
-    assert _sanitize_phone(None) is None
-    assert _sanitize_phone("") is None
-    
-    # Too short (less than 4 total chars including country code)
-    assert _sanitize_phone("1") is None
-    
-    # Too long (more than 16 chars)
-    assert _sanitize_phone("12345678901234567890") is None
-
-
-def test_contact_not_found_returns_404(
-    mock_hubspot_client,
-    mock_pc_client,
-    sample_contact_webhook
+def test_eventbridge_event_syncs_contacts(
+    mock_handler_clients,
+    sample_eventbridge_event,
+    sample_pc_opportunity,
+    sample_hubspot_deal,
 ):
-    """Test that missing contact returns 404."""
+    """Test that EventBridge opportunity.updated event triggers contact sync."""
     from contact_sync.handler import lambda_handler
-    
-    # Setup mocks - contact not found
-    mock_hubspot_client.get_contact.return_value = None
-    
-    # Execute
-    response = lambda_handler(sample_contact_webhook, None)
-    
-    # Verify 404
-    assert response["statusCode"] == 404
-    body = json.loads(response["body"])
-    assert "not found" in body["error"].lower()
 
+    hs_client, pc_client = mock_handler_clients
 
-def test_multiple_contacts_per_deal_are_synced(
-    mock_hubspot_client,
-    mock_pc_client,
-    sample_contact_webhook,
-    sample_contact,
-    sample_deal,
-    sample_opportunity
-):
-    """Test that all contacts associated with a deal are synced."""
-    from contact_sync.handler import lambda_handler
-    
     # Setup mocks
-    mock_hubspot_client.get_contact.side_effect = [
-        sample_contact,  # First call for webhook contact
-        sample_contact,  # Second call for deal's contacts
-        {
-            "id": "99999",
-            "properties": {
-                "email": "another@example.com",
-                "firstname": "Another",
-                "lastname": "Person"
-            }
-        }
-    ]
-    mock_hubspot_client.get_contact_associations.return_value = ["12345"]
-    mock_hubspot_client.get_deal.return_value = sample_deal
-    mock_hubspot_client.get_deal_associations.return_value = ["54321", "99999"]
-    mock_pc_client.get_opportunity.return_value = sample_opportunity
-    mock_hubspot_client.now_timestamp_ms.return_value = 1708257600000
-    
+    pc_client.get_opportunity.return_value = sample_pc_opportunity
+    hs_client.search_deals_by_aws_opportunity_id.return_value = [sample_hubspot_deal]
+
+    # Mock contact search (doesn't exist) and creation
+    search_response = MagicMock()
+    search_response.json.return_value = {"results": []}
+    hs_client.session.post.return_value = search_response
+
+    create_response = MagicMock()
+    create_response.json.return_value = {"id": "contact1"}
+    create_response.raise_for_status = MagicMock()
+    hs_client.session.post.return_value = create_response
+
+    # Mock association
+    assoc_response = MagicMock()
+    assoc_response.status_code = 200
+    hs_client.session.put.return_value = assoc_response
+
     # Execute
-    response = lambda_handler(sample_contact_webhook, None)
-    
+    response = lambda_handler(sample_eventbridge_event, None)
+
     # Verify success
     assert response["statusCode"] == 200
-    
-    # Verify all contacts were included in update
-    update_call = mock_pc_client.update_opportunity.call_args[1]
-    contacts = update_call["Customer"]["Contacts"]
-    assert len(contacts) == 2
-    emails = [c["Email"] for c in contacts]
-    assert "newemail@example.com" in emails
-    assert "another@example.com" in emails
+    body = json.loads(response["body"])
+    assert body["opportunitiesProcessed"] == 1
+    assert body["contactsSynced"] == 2  # 1 customer + 1 team
+
+
+def test_manual_event_syncs_specific_opportunity(
+    mock_handler_clients,
+    sample_manual_event,
+    sample_pc_opportunity,
+    sample_hubspot_deal,
+):
+    """Test that manual API call with opportunityId syncs that opportunity."""
+    from contact_sync.handler import lambda_handler
+
+    hs_client, pc_client = mock_handler_clients
+
+    # Setup mocks
+    pc_client.get_opportunity.return_value = sample_pc_opportunity
+    hs_client.search_deals_by_aws_opportunity_id.return_value = [sample_hubspot_deal]
+
+    # Mock contact operations
+    search_response = MagicMock()
+    search_response.json.return_value = {"results": []}
+    search_response.raise_for_status = MagicMock()
+
+    create_response = MagicMock()
+    create_response.json.return_value = {"id": "contact1"}
+    create_response.raise_for_status = MagicMock()
+
+    hs_client.session.post.side_effect = [
+        search_response,
+        create_response,
+        search_response,
+        create_response,
+    ]
+
+    assoc_response = MagicMock()
+    assoc_response.status_code = 200
+    hs_client.session.put.return_value = assoc_response
+
+    # Execute
+    response = lambda_handler(sample_manual_event, None)
+
+    # Verify
+    assert response["statusCode"] == 200
+    body = json.loads(response["body"])
+    assert body["opportunitiesProcessed"] == 1
+    assert body["contactsSynced"] == 2
+
+
+def test_scheduled_event_syncs_all_opportunities(
+    mock_handler_clients,
+    sample_scheduled_event,
+    sample_pc_opportunity,
+    sample_hubspot_deal,
+):
+    """Test that scheduled event syncs all deals with aws_opportunity_id."""
+    from contact_sync.handler import lambda_handler
+
+    hs_client, pc_client = mock_handler_clients
+
+    # Mock deal search returns deals with opportunity IDs
+    deal_search_response = MagicMock()
+    deal_search_response.json.return_value = {
+        "results": [
+            {"properties": {"aws_opportunity_id": "O111"}},
+            {"properties": {"aws_opportunity_id": "O222"}},
+        ]
+    }
+    deal_search_response.raise_for_status = MagicMock()
+
+    # Setup other mocks
+    pc_client.get_opportunity.return_value = sample_pc_opportunity
+    hs_client.search_deals_by_aws_opportunity_id.return_value = [sample_hubspot_deal]
+
+    # Mock contact operations
+    contact_response = MagicMock()
+    contact_response.json.return_value = {"results": [], "id": "contact1"}
+    contact_response.status_code = 200
+    contact_response.raise_for_status = MagicMock()
+
+    hs_client.session.post.return_value = contact_response
+    hs_client.session.patch.return_value = contact_response
+    hs_client.session.put.return_value = contact_response
+
+    # Need to handle both deal search and contact search
+    def post_side_effect(*args, **kwargs):
+        url = args[0] if args else kwargs.get("url", "")
+        if "deals/search" in url:
+            return deal_search_response
+        else:
+            return contact_response
+
+    hs_client.session.post.side_effect = post_side_effect
+
+    # Execute
+    response = lambda_handler(sample_scheduled_event, None)
+
+    # Verify
+    assert response["statusCode"] == 200
+    body = json.loads(response["body"])
+    assert body["opportunitiesProcessed"] == 2
+
+
+def test_opportunity_without_contacts_returns_none(
+    mock_handler_clients, sample_manual_event, sample_hubspot_deal
+):
+    """Test that opportunities without contacts are skipped."""
+    from contact_sync.handler import lambda_handler
+
+    hs_client, pc_client = mock_handler_clients
+
+    # Setup mocks - opportunity with no contacts
+    empty_opp = {
+        "Identifier": "O1234567890",
+        "Customer": {"Account": {"CompanyName": "Test"}},
+        "OpportunityTeam": [],
+    }
+    pc_client.get_opportunity.return_value = empty_opp
+
+    # Execute
+    response = lambda_handler(sample_manual_event, None)
+
+    # Verify success but no contacts synced
+    assert response["statusCode"] == 200
+    body = json.loads(response["body"])
+    assert body["contactsSynced"] == 0
+
+
+def test_missing_deal_for_opportunity_skips_sync(
+    mock_handler_clients, sample_manual_event, sample_pc_opportunity
+):
+    """Test that opportunities without corresponding HubSpot deals are skipped."""
+    from contact_sync.handler import lambda_handler
+
+    hs_client, pc_client = mock_handler_clients
+
+    # Setup mocks
+    pc_client.get_opportunity.return_value = sample_pc_opportunity
+    hs_client.search_deals_by_aws_opportunity_id.return_value = []  # No deal found
+
+    # Execute
+    response = lambda_handler(sample_manual_event, None)
+
+    # Verify success but no contacts synced
+    assert response["statusCode"] == 200
+    body = json.loads(response["body"])
+    assert body["contactsSynced"] == 0
+
+
+def test_contact_without_email_is_skipped(
+    mock_handler_clients, sample_manual_event, sample_hubspot_deal
+):
+    """Test that contacts without email addresses are skipped."""
+    from contact_sync.handler import lambda_handler
+
+    hs_client, pc_client = mock_handler_clients
+
+    # Setup mocks - opportunity with contact missing email
+    opp_no_email = {
+        "Identifier": "O1234567890",
+        "Customer": {
+            "Contacts": [{"FirstName": "John", "LastName": "Doe"}]  # No email
+        },
+        "OpportunityTeam": [],
+    }
+    pc_client.get_opportunity.return_value = opp_no_email
+    hs_client.search_deals_by_aws_opportunity_id.return_value = [sample_hubspot_deal]
+
+    # Execute
+    response = lambda_handler(sample_manual_event, None)
+
+    # Verify success but no contacts synced
+    assert response["statusCode"] == 200
+    body = json.loads(response["body"])
+    assert body["contactsSynced"] == 0
