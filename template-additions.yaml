@@ -1,0 +1,133 @@
+# ============================================================
+# NEW RESOURCES FOR ADVANCED FEATURES
+# Add these to your template.yaml manually or via sam build
+# ============================================================
+
+Parameters:
+  AwsSummarySyncInterval:
+    Type: Number
+    Default: 60
+    Description: How often (in minutes) to sync AWS Opportunity Summaries
+
+Resources:
+  # ========== 1. Submit Opportunity Function ==========
+  SubmitOpportunityFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "submit-opportunity-${Environment}"
+      CodeUri: src/submit_opportunity/
+      Handler: handler.lambda_handler
+      Description: Submit opportunity to AWS Partner Central for co-sell review
+      Layers:
+        - !Ref CommonLayer
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action: sts:AssumeRole
+              Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/HubSpotPartnerCentralServiceRole"
+      Events:
+        SubmitApi:
+          Type: Api
+          Properties:
+            RestApiId: !Ref WebhookApi
+            Path: /submit-opportunity
+            Method: POST
+
+  # ========== 2. Sync AWS Summary Function ==========
+  SyncAwsSummaryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "sync-aws-summary-${Environment}"
+      CodeUri: src/sync_aws_summary/
+      Handler: handler.lambda_handler
+      Description: Sync AWS Opportunity Summary to HubSpot (engagement scores, feedback)
+      Layers:
+        - !Ref CommonLayer
+      Timeout: 300
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action: sts:AssumeRole
+              Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/HubSpotPartnerCentralServiceRole"
+      Events:
+        HourlySync:
+          Type: Schedule
+          Properties:
+            Schedule: !Sub "rate(${AwsSummarySyncInterval} minutes)"
+            Name: !Sub "aws-summary-sync-${Environment}"
+            Description: Fetch AWS Opportunity Summaries and sync to HubSpot
+            Enabled: true
+
+  # ========== 3. EventBridge Events Function ==========
+  EventBridgeEventsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "eventbridge-events-${Environment}"
+      CodeUri: src/eventbridge_events/
+      Handler: handler.lambda_handler
+      Description: Process real-time Partner Central events via EventBridge
+      Layers:
+        - !Ref CommonLayer
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action: sts:AssumeRole
+              Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/HubSpotPartnerCentralServiceRole"
+
+  # ========== 4. EventBridge Rule ==========
+  PartnerCentralEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "partner-central-events-${Environment}"
+      Description: Route Partner Central events to Lambda for real-time sync
+      EventPattern:
+        source:
+          - aws.partnercentral-selling
+        detail-type:
+          - Opportunity Created
+          - Opportunity Updated
+          - Engagement Invitation Created
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt EventBridgeEventsFunction.Arn
+          Id: EventBridgeEventsTarget
+
+  # ========== 5. EventBridge Permission ==========
+  EventBridgeInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref EventBridgeEventsFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt PartnerCentralEventRule.Arn
+
+  # ========== CloudWatch Log Groups ==========
+  SubmitOpportunityLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/submit-opportunity-${Environment}"
+      RetentionInDays: 30
+
+  SyncAwsSummaryLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/sync-aws-summary-${Environment}"
+      RetentionInDays: 30
+
+  EventBridgeEventsLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/eventbridge-events-${Environment}"
+      RetentionInDays: 30
+
+Outputs:
+  SubmitOpportunityUrl:
+    Description: API endpoint for manual opportunity submission
+    Value: !Sub "https://${WebhookApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/submit-opportunity"
+
+  EventBridgeRuleArn:
+    Description: EventBridge rule ARN for Partner Central events
+    Value: !GetAtt PartnerCentralEventRule.Arn
