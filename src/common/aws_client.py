@@ -15,12 +15,15 @@ logger = logging.getLogger(__name__)
 ROLE_NAME = "HubSpotPartnerCentralServiceRole"
 ROLE_SESSION_NAME = "HubSpotPartnerCentralSession"
 PARTNER_CENTRAL_CATALOG = "AWS"
+EXTERNAL_ID = "HubSpotPartnerCentralIntegration"  # Must match IAM role trust policy
 
 
 def get_assumed_role_credentials(role_arn: Optional[str] = None) -> dict:
     """
     Assume the HubSpotPartnerCentralServiceRole and return temporary credentials.
     The role ARN is built from the current account if not explicitly provided.
+    
+    Security: Uses ExternalId to prevent confused deputy attacks.
     """
     sts_client = boto3.client("sts")
 
@@ -34,6 +37,7 @@ def get_assumed_role_credentials(role_arn: Optional[str] = None) -> dict:
         RoleArn=role_arn,
         RoleSessionName=ROLE_SESSION_NAME,
         DurationSeconds=3600,
+        ExternalId=EXTERNAL_ID,
     )
 
     return response["Credentials"]

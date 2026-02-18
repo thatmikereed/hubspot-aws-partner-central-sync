@@ -29,9 +29,9 @@ sys.path.insert(0, "/var/task")
 from common.aws_client import get_partner_central_client, PARTNER_CENTRAL_CATALOG
 from common.hubspot_client import HubSpotClient
 from common.mappers import partner_central_opportunity_to_hubspot
+from common.validators import validate_partner_central_id
 
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+logger = logging.getLogger(__name__)
 
 # How long to wait for a task to complete (seconds)
 TASK_POLL_INTERVAL = 2
@@ -118,6 +118,13 @@ def _process_invitation(invitation_id: str, pc_client, hubspot: HubSpotClient) -
     Accept one Partner Central invitation via StartEngagementByAcceptingInvitationTask,
     then create a HubSpot deal from the opportunity.
     """
+    # Validate invitation ID
+    try:
+        invitation_id = validate_partner_central_id(invitation_id, "Invitation ID")
+    except ValueError as e:
+        logger.error(f"Invalid invitation ID: {e}")
+        raise
+    
     # -----------------------------------------------------------------------
     # 1. Deduplicate: skip if already synced
     # -----------------------------------------------------------------------

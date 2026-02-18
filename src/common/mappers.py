@@ -227,6 +227,21 @@ def hubspot_deal_to_partner_central(deal: dict, associated_company: Optional[dic
     # ---- PrimaryNeedsFromAws ----
     primary_needs = _parse_primary_needs(props.get("aws_primary_needs"))
 
+    # Build account with optional WebsiteUrl
+    account = {
+        "CompanyName": company_name,
+        "Industry": industry,
+        "Address": {
+            "CountryCode": country_code,
+            **({"City": city} if city else {}),
+            **({"StateOrRegion": state} if state else {}),
+            **({"PostalCode": postal_code} if postal_code else {}),
+            **({"StreetAddress": street} if street else {}),
+        },
+    }
+    if website_url:
+        account["WebsiteUrl"] = website_url
+
     opportunity: dict = {
         "Catalog": "AWS",
         "ClientToken": _make_client_token(deal["id"]),
@@ -236,18 +251,7 @@ def hubspot_deal_to_partner_central(deal: dict, associated_company: Optional[dic
         "PartnerOpportunityIdentifier": str(deal["id"])[:64],
         "PrimaryNeedsFromAws": primary_needs,
         "Customer": {
-            "Account": {
-                "CompanyName": company_name,
-                "Industry": industry,
-                "WebsiteUrl": website_url,
-                "Address": {
-                    "CountryCode": country_code,
-                    **({"City": city} if city else {}),
-                    **({"StateOrRegion": state} if state else {}),
-                    **({"PostalCode": postal_code} if postal_code else {}),
-                    **({"StreetAddress": street} if street else {}),
-                },
-            },
+            "Account": account,
             **({"Contacts": contacts} if contacts else {}),
         },
         "LifeCycle": {
@@ -409,17 +413,18 @@ def _sanitize_business_problem(raw: Optional[str], deal_name: str = "") -> str:
     return text[:2000]
 
 
-def _sanitize_website(url: Optional[str]) -> str:
+def _sanitize_website(url: Optional[str]) -> Optional[str]:
     """
     Ensure WebsiteUrl is 4-255 chars and starts with https://.
-    Falls back to a placeholder if nothing is available.
+    Returns None if no valid URL is available.
     """
     if not url:
-        return "https://www.example.com"
+        return None
     url = url.strip()
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
-    return url[:255] if len(url) >= 4 else "https://www.example.com"
+    # Return None if URL is too short after sanitization
+    return url[:255] if len(url) >= 4 else None
 
 
 def _map_industry(raw: Optional[str]) -> str:
@@ -683,3 +688,94 @@ def _sanitize_phone(raw: Optional[str]) -> Optional[str]:
     if len(digits) < 4 or len(digits) > 16:
         return None
     return digits
+
+
+# ---------------------------------------------------------------------------
+# Public: Simplified HubSpot deal property update → Partner Central update
+# Used by webhook handler for incremental property changes
+# ---------------------------------------------------------------------------
+
+def hubspot_deal_to_partner_central_updates(
+    deal: dict,
+    associated_company: Optional[dict] = None,
+    associated_contacts: Optional[list] = None,
+    changed_property: Optional[str] = None,
+    new_value: Optional[str] = None,
+) -> Optional[dict]:
+    """
+    Create a Partner Central UpdateOpportunity payload from a HubSpot deal
+    property change. This is a lightweight version for webhook-driven updates.
+    
+    Args:
+        deal: Full HubSpot deal object
+        associated_company: Associated company object (optional)
+        associated_contacts: Associated contacts (optional)
+        changed_property: The property that changed (e.g., "dealstage")
+        new_value: The new value of the property
+    
+    Returns:
+        Update payload dict or None if no update is needed
+        
+    Note:
+        Caller must verify the deal has an aws_opportunity_id before calling.
+        This function only builds the update payload and does not validate
+        that the deal is linked to a Partner Central opportunity.
+    """
+    props = deal.get("properties", {})
+    
+    # Build minimal update payload based on changed property
+    update_payload = {}
+    
+    # Stage changes
+    if changed_property == "dealstage":
+        hs_stage = (new_value or "").lower().strip()
+        pc_stage = HUBSPOT_STAGE_TO_PC.get(hs_stage, "Prospect")
+        sales_activities = STAGE_TO_SALES_ACTIVITIES.get(pc_stage, ["Initialized discussions with customer"])
+        
+        update_payload["LifeCycle"] = {
+            "Stage": pc_stage,
+            "TargetCloseDate": _safe_close_date(props.get("closedate")),
+        }
+        update_payload["Project"] = {
+            "SalesActivities": sales_activities,
+        }
+    
+    # Close date changes
+    elif changed_property == "closedate":
+        target_close = _safe_close_date(new_value)
+        update_payload["LifeCycle"] = {
+            "Stage": HUBSPOT_STAGE_TO_PC.get((props.get("dealstage") or "").lower(), "Prospect"),
+            "TargetCloseDate": target_close,
+        }
+    
+    # Amount changes
+    elif changed_property == "amount":
+        spend = _build_spend(props)
+        update_payload["Project"] = {
+            "ExpectedCustomerSpend": spend,
+        }
+    
+    # Description changes
+    elif changed_property in ["description", "hs_deal_description"]:
+        business_problem = _sanitize_business_problem(
+            new_value or props.get("description") or props.get("hs_deal_description"),
+            deal_name=props.get("dealname", ""),
+        )
+        update_payload["Project"] = {
+            "CustomerBusinessProblem": business_problem,
+        }
+    
+    # Deal name changes (note: title is immutable in PC after submission)
+    elif changed_property == "dealname":
+        # We cannot update the title in Partner Central after submission
+        # Log this but don't include in payload
+        return None
+    
+    # Currency code changes
+    elif changed_property == "deal_currency_code":
+        spend = _build_spend(props)
+        update_payload["Project"] = {
+            "ExpectedCustomerSpend": spend,
+        }
+    
+    return update_payload if update_payload else None
