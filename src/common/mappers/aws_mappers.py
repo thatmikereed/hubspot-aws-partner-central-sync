@@ -25,12 +25,35 @@ spec = importlib.util.spec_from_file_location("_mappers_module", mappers_file)
 _mappers = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(_mappers)
 
+# Main transformation functions
 hubspot_deal_to_partner_central = _mappers.hubspot_deal_to_partner_central
 hubspot_deal_to_partner_central_update = _mappers.hubspot_deal_to_partner_central_update
 partner_central_opportunity_to_hubspot = _mappers.partner_central_opportunity_to_hubspot
+
+# Constants
+HUBSPOT_STAGE_TO_PC = _mappers.HUBSPOT_STAGE_TO_PC
+PC_STAGE_TO_HUBSPOT = _mappers.PC_STAGE_TO_HUBSPOT
+PC_VALID_INDUSTRIES = _mappers.PC_VALID_INDUSTRIES
+PC_VALID_DELIVERY_MODELS = _mappers.PC_VALID_DELIVERY_MODELS
+
+# Utility functions
+_sanitize_business_problem = _mappers._sanitize_business_problem
+_sanitize_website = _mappers._sanitize_website
+_map_industry = _mappers._map_industry
+_safe_close_date = _mappers._safe_close_date
+_build_spend = _mappers._build_spend
 
 __all__ = [
     "hubspot_deal_to_partner_central",
     "hubspot_deal_to_partner_central_update",
     "partner_central_opportunity_to_hubspot",
+    "HUBSPOT_STAGE_TO_PC",
+    "PC_STAGE_TO_HUBSPOT",
+    "PC_VALID_INDUSTRIES",
+    "PC_VALID_DELIVERY_MODELS",
+    "_sanitize_business_problem",
+    "_sanitize_website",
+    "_map_industry",
+    "_safe_close_date",
+    "_build_spend",
 ]
