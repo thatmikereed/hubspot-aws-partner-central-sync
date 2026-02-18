@@ -2,6 +2,16 @@
 
 This document outlines the security measures implemented in this integration and best practices for deployment and operation.
 
+## Table of Contents
+
+- [Security Features Implemented](#-security-features-implemented)
+- [Production Deployment Checklist](#-production-deployment-checklist)
+- [Additional Security Recommendations](#-additional-security-recommendations)
+- [Reporting Security Issues](#-reporting-security-issues)
+- [Security References](#-security-references)
+
+---
+
 ## 🔒 Security Features Implemented
 
 ### 1. Confused Deputy Attack Prevention
@@ -191,9 +201,4 @@ If you discover a security vulnerability:
 
 ---
 
-## 🔄 Security Review History
-
-| Date | Reviewer | Changes |
-|------|----------|---------|
-| 2026-02-18 | GitHub Copilot | Initial security audit and fixes |
-
+**For security questions or to report vulnerabilities, please see the [Reporting Security Issues](#-reporting-security-issues) section above.**

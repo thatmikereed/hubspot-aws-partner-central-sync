@@ -16,6 +16,20 @@ AWS EngagementInvitation  ──►  AcceptEngagementInvitation
                                (with #AWS in title)
 ```
 
+## Table of Contents
+
+- [Architecture](#architecture)
+- [Prerequisites](#prerequisites)
+- [Deployment](#deployment)
+- [How It Works](#how-it-works)
+- [Advanced Features](#advanced-features)
+- [Feature Details](#feature-details)
+- [Configuration](#configuration)
+- [Local Development](#local-development)
+- [Project Structure](#project-structure)
+- [Security Notes](#security-notes)
+- [Extending the Integration](#extending-the-integration)
+
 ---
 
 ## Architecture
