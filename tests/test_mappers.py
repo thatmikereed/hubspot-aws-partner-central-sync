@@ -126,8 +126,7 @@ class TestHubSpotToPartnerCentral:
         assert result["ClientToken"].startswith("hs-deal-")
         assert result["Customer"]["Account"]["CompanyName"]
         assert result["Customer"]["Account"]["Industry"] in PC_VALID_INDUSTRIES
-        assert result["Customer"]["Account"]["WebsiteUrl"].startswith("https://")
-        assert len(result["Customer"]["Account"]["WebsiteUrl"]) >= 4
+        # WebsiteUrl is now optional, not required with a placeholder
         assert result["LifeCycle"]["Stage"] in HUBSPOT_STAGE_TO_PC.values()
         assert result["Project"]["CustomerBusinessProblem"]
         assert len(result["Project"]["CustomerBusinessProblem"]) >= 20
@@ -254,6 +253,18 @@ class TestHubSpotToPartnerCentral:
         deal = {"id": "1", "properties": {"dealname": "X #AWS", "dealtype": "expansion"}}
         result = hubspot_deal_to_partner_central(deal)
         assert result["OpportunityType"] == "Expansion"
+
+    def test_website_url_included_when_present(self):
+        company = {"properties": {"website": "example.com"}}
+        deal = {"id": "1", "properties": {"dealname": "Test #AWS"}}
+        result = hubspot_deal_to_partner_central(deal, associated_company=company)
+        assert "WebsiteUrl" in result["Customer"]["Account"]
+        assert result["Customer"]["Account"]["WebsiteUrl"] == "https://example.com"
+
+    def test_website_url_omitted_when_absent(self):
+        deal = {"id": "1", "properties": {"dealname": "Test #AWS"}}
+        result = hubspot_deal_to_partner_central(deal)
+        assert "WebsiteUrl" not in result["Customer"]["Account"]
 
     def test_sales_activities_match_stage(self, full_deal):
         result = hubspot_deal_to_partner_central(full_deal)
@@ -409,8 +420,8 @@ class TestHelpers:
 
     def test_sanitize_website_fallback_on_none(self):
         result = _sanitize_website(None)
-        assert result.startswith("https://")
-        assert len(result) >= 4
+        # Now returns None instead of placeholder
+        assert result is None
 
     def test_sanitize_website_truncates(self):
         result = _sanitize_website("https://" + "a" * 260 + ".com")
