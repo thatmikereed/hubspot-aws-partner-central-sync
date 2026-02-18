@@ -223,8 +223,11 @@ sam local invoke HubSpotToPartnerCentralFunction \
 - The HubSpot access token is stored in **SSM Parameter Store** (SecureString) and injected as an environment variable — never hardcoded.
 - Webhook requests are verified using HubSpot's HMAC-SHA256 signature scheme when `HUBSPOT_WEBHOOK_SECRET` is set.
 - The `HubSpotPartnerCentralServiceRole` uses an `ExternalId` condition (`HubSpotPartnerCentralIntegration`) to prevent confused-deputy attacks.
-- All Lambda functions log to CloudWatch with a 30-day retention policy.
+- All Lambda functions log to CloudWatch with a 30-day retention policy. Sensitive data is redacted from logs.
 - No Partner Central credentials or tokens are stored — access is always via short-lived STS credentials from the assumed role.
+- All external inputs are validated and sanitized to prevent injection attacks.
+
+**For detailed security information and best practices, see [SECURITY.md](./SECURITY.md).**
 
 ---
 
