@@ -14,20 +14,14 @@ This handler enables:
 """
 
 import json
-import logging
-import sys
 import uuid
 
-sys.path.insert(0, "/var/task")
-
-from common.aws_client import get_partner_central_client, PARTNER_CENTRAL_CATALOG
-from common.hubspot_client import HubSpotClient
+from common.aws_client import PARTNER_CENTRAL_CATALOG
+from common.base_handler import BaseLambdaHandler
 from common.mappers import partner_central_opportunity_to_hubspot
 
-logger = logging.getLogger(__name__)
 
-
-def lambda_handler(event: dict, context) -> dict:
+class EventBridgeEventsHandler(BaseLambdaHandler):
     """
     Process Partner Central EventBridge events.
 
@@ -48,384 +42,371 @@ def lambda_handler(event: dict, context) -> dict:
         }
     }
     """
-    logger.info("Received EventBridge event: %s", json.dumps(event, default=str))
 
-    detail_type = event.get("detail-type", "")
-    detail = event.get("detail", {})
+    def _execute(self, event: dict, context: dict) -> dict:
+        self.logger.info(
+            "Received EventBridge event: %s", json.dumps(event, default=str)
+        )
 
-    try:
-        hubspot = HubSpotClient()
-        pc_client = get_partner_central_client()
+        detail_type = event.get("detail-type", "")
+        detail = event.get("detail", {})
 
         if detail_type == "Opportunity Created":
-            result = _handle_opportunity_created(detail, hubspot, pc_client)
+            result = self._handle_opportunity_created(detail)
         elif detail_type == "Opportunity Updated":
-            result = _handle_opportunity_updated(detail, hubspot, pc_client)
+            result = self._handle_opportunity_updated(detail)
         elif detail_type == "Engagement Invitation Created":
-            result = _handle_invitation_created(detail, hubspot, pc_client)
+            result = self._handle_invitation_created(detail)
         else:
-            logger.warning("Unhandled event type: %s", detail_type)
-            return {"statusCode": 200, "body": json.dumps({"skipped": True})}
+            self.logger.warning("Unhandled event type: %s", detail_type)
+            return self._success_response({"skipped": True})
 
-        return {"statusCode": 200, "body": json.dumps(result)}
+        return self._success_response(result)
 
-    except Exception as exc:
-        logger.exception("Error processing EventBridge event: %s", exc)
-        return {"statusCode": 500, "body": json.dumps({"error": str(exc)})}
+    def _handle_opportunity_created(self, detail: dict) -> dict:
+        """
+        Handle 'Opportunity Created' event.
 
+        This typically means another partner or AWS created an opportunity in a
+        shared engagement. We should check if we already have it in HubSpot;
+        if not, create a new deal.
+        """
+        opportunity_id = detail.get("opportunity", {}).get("identifier")
+        if not opportunity_id:
+            self.logger.warning("Opportunity Created event missing identifier")
+            return {"error": "Missing opportunity identifier"}
 
-# ---------------------------------------------------------------------------
-# Event Handlers
-# ---------------------------------------------------------------------------
+        self.logger.info("Processing Opportunity Created: %s", opportunity_id)
 
-
-def _handle_opportunity_created(
-    detail: dict, hubspot: HubSpotClient, pc_client
-) -> dict:
-    """
-    Handle 'Opportunity Created' event.
-
-    This typically means another partner or AWS created an opportunity in a
-    shared engagement. We should check if we already have it in HubSpot;
-    if not, create a new deal.
-    """
-    opportunity_id = detail.get("opportunity", {}).get("identifier")
-    if not opportunity_id:
-        logger.warning("Opportunity Created event missing identifier")
-        return {"error": "Missing opportunity identifier"}
-
-    logger.info("Processing Opportunity Created: %s", opportunity_id)
-
-    # Check if already exists in HubSpot
-    existing = hubspot.search_deals_by_aws_opportunity_id(opportunity_id)
-    if existing:
-        logger.info(
-            "Opportunity %s already exists as deal %s",
-            opportunity_id,
-            existing[0]["id"],
+        # Check if already exists in HubSpot
+        existing = self.hubspot_client.search_deals_by_aws_opportunity_id(
+            opportunity_id
         )
-        return {"status": "already_exists", "dealId": existing[0]["id"]}
+        if existing:
+            self.logger.info(
+                "Opportunity %s already exists as deal %s",
+                opportunity_id,
+                existing[0]["id"],
+            )
+            return {"status": "already_exists", "dealId": existing[0]["id"]}
 
-    # Fetch the opportunity details
-    opportunity = pc_client.get_opportunity(
-        Catalog=PARTNER_CENTRAL_CATALOG,
-        Identifier=opportunity_id,
-    )
-
-    # Create HubSpot deal
-    hs_properties = partner_central_opportunity_to_hubspot(opportunity)
-    deal = hubspot.create_deal(hs_properties)
-
-    logger.info(
-        "Created HubSpot deal %s from PC opportunity %s", deal["id"], opportunity_id
-    )
-
-    return {
-        "status": "created",
-        "dealId": deal["id"],
-        "opportunityId": opportunity_id,
-        "source": "eventbridge_opportunity_created",
-    }
-
-
-def _handle_opportunity_updated(
-    detail: dict, hubspot: HubSpotClient, pc_client
-) -> dict:
-    """
-    Handle 'Opportunity Updated' event.
-
-    This is the core of REVERSE SYNC: when AWS updates an opportunity
-    (stage change, review status, notes), we sync those changes to HubSpot.
-    """
-    opportunity_id = detail.get("opportunity", {}).get("identifier")
-    if not opportunity_id:
-        return {"error": "Missing opportunity identifier"}
-
-    logger.info("Processing Opportunity Updated: %s", opportunity_id)
-
-    # Find the corresponding HubSpot deal
-    deals = hubspot.search_deals_by_aws_opportunity_id(opportunity_id)
-    if not deals:
-        logger.warning(
-            "No HubSpot deal found for opportunity %s - creating new", opportunity_id
-        )
-        # Create deal if it doesn't exist (could be AWS-originated)
-        opportunity = pc_client.get_opportunity(
+        # Fetch the opportunity details
+        opportunity = self.pc_client.get_opportunity(
             Catalog=PARTNER_CENTRAL_CATALOG,
             Identifier=opportunity_id,
         )
+
+        # Create HubSpot deal
         hs_properties = partner_central_opportunity_to_hubspot(opportunity)
-        deal = hubspot.create_deal(hs_properties)
-        deal_id = deal["id"]
-    else:
-        deal_id = deals[0]["id"]
+        deal = self.hubspot_client.create_deal(hs_properties)
 
-    # Fetch latest opportunity state
-    opportunity = pc_client.get_opportunity(
-        Catalog=PARTNER_CENTRAL_CATALOG,
-        Identifier=opportunity_id,
-    )
+        self.logger.info(
+            "Created HubSpot deal %s from PC opportunity %s", deal["id"], opportunity_id
+        )
 
-    # Also fetch AWS summary if available
-    aws_summary = None
-    try:
-        aws_summary = pc_client.get_aws_opportunity_summary(
+        return {
+            "status": "created",
+            "dealId": deal["id"],
+            "opportunityId": opportunity_id,
+            "source": "eventbridge_opportunity_created",
+        }
+
+    def _handle_opportunity_updated(self, detail: dict) -> dict:
+        """
+        Handle 'Opportunity Updated' event.
+
+        This is the core of REVERSE SYNC: when AWS updates an opportunity
+        (stage change, review status, notes), we sync those changes to HubSpot.
+        """
+        opportunity_id = detail.get("opportunity", {}).get("identifier")
+        if not opportunity_id:
+            return {"error": "Missing opportunity identifier"}
+
+        self.logger.info("Processing Opportunity Updated: %s", opportunity_id)
+
+        # Find the corresponding HubSpot deal
+        deals = self.hubspot_client.search_deals_by_aws_opportunity_id(opportunity_id)
+        if not deals:
+            self.logger.warning(
+                "No HubSpot deal found for opportunity %s - creating new",
+                opportunity_id,
+            )
+            # Create deal if it doesn't exist (could be AWS-originated)
+            opportunity = self.pc_client.get_opportunity(
+                Catalog=PARTNER_CENTRAL_CATALOG,
+                Identifier=opportunity_id,
+            )
+            hs_properties = partner_central_opportunity_to_hubspot(opportunity)
+            deal = self.hubspot_client.create_deal(hs_properties)
+            deal_id = deal["id"]
+        else:
+            deal_id = deals[0]["id"]
+
+        # Fetch latest opportunity state
+        opportunity = self.pc_client.get_opportunity(
             Catalog=PARTNER_CENTRAL_CATALOG,
             Identifier=opportunity_id,
         )
-    except Exception:
-        pass  # Summary may not be available yet
 
-    # Build update payload
-    lifecycle = opportunity.get("LifeCycle", {})
-    project = opportunity.get("Project", {})
+        # Also fetch AWS summary if available
+        aws_summary = None
+        try:
+            aws_summary = self.pc_client.get_aws_opportunity_summary(
+                Catalog=PARTNER_CENTRAL_CATALOG,
+                Identifier=opportunity_id,
+            )
+        except Exception:
+            pass  # Summary may not be available yet
 
-    pc_stage = lifecycle.get("Stage", "")
+        # Build update payload
+        lifecycle = opportunity.get("LifeCycle", {})
+        project = opportunity.get("Project", {})
 
-    # Check if AWS marked opportunity as "Closed Lost"
-    # If so, create a notification task instead of auto-updating the stage
-    if pc_stage == "Closed Lost":
-        logger.info(
-            "Opportunity %s marked as Closed Lost by AWS - creating notification",
+        pc_stage = lifecycle.get("Stage", "")
+
+        # Check if AWS marked opportunity as "Closed Lost"
+        # If so, create a notification task instead of auto-updating the stage
+        if pc_stage == "Closed Lost":
+            self.logger.info(
+                "Opportunity %s marked as Closed Lost by AWS - creating notification",
+                opportunity_id,
+            )
+            self._create_closed_lost_notification(deal_id, opportunity_id)
+
+            # Update other fields but NOT the stage
+            updates = {
+                "aws_review_status": lifecycle.get("ReviewStatus", ""),
+            }
+        else:
+            # Normal sync: update all fields including stage
+            updates = {
+                "aws_review_status": lifecycle.get("ReviewStatus", ""),
+                "dealstage": self._map_stage_to_hubspot(pc_stage),
+            }
+
+        # Sync description if changed (but never the title - it's immutable)
+        business_problem = project.get("CustomerBusinessProblem")
+        if business_problem:
+            updates["description"] = business_problem
+
+        # Sync close date if changed
+        target_close = lifecycle.get("TargetCloseDate")
+        if target_close:
+            from datetime import datetime
+
+            try:
+                dt = datetime.strptime(target_close, "%Y-%m-%d")
+                updates["closedate"] = dt.isoformat() + "Z"
+            except ValueError:
+                pass
+
+        # Sync AWS summary data if available
+        if aws_summary:
+            insights = aws_summary.get("Insights", {})
+            engagement_score = insights.get("EngagementScore")
+            if engagement_score is not None:
+                updates["aws_engagement_score"] = str(engagement_score)
+
+            aws_involvement = aws_summary.get("LifeCycle", {}).get("InvolvementType")
+            if aws_involvement:
+                updates["aws_involvement_type"] = aws_involvement
+
+        # Update HubSpot
+        self.hubspot_client.update_deal(deal_id, updates)
+
+        # Add a note about the AWS update
+        note_parts = ["🔄 AWS Updated Opportunity"]
+        if "ReviewStatus" in lifecycle:
+            note_parts.append(f"Review Status: {lifecycle['ReviewStatus']}")
+        if "Stage" in lifecycle:
+            note_parts.append(f"Stage: {lifecycle['Stage']}")
+        if aws_summary:
+            score = aws_summary.get("Insights", {}).get("EngagementScore")
+            if score:
+                note_parts.append(f"Engagement Score: {score}/100")
+
+        self.hubspot_client.add_note_to_deal(deal_id, "\n".join(note_parts))
+
+        self.logger.info("Synced PC updates to HubSpot deal %s", deal_id)
+
+        return {
+            "status": "synced",
+            "dealId": deal_id,
+            "opportunityId": opportunity_id,
+            "updatedFields": list(updates.keys()),
+        }
+
+    def _handle_invitation_created(self, detail: dict) -> dict:
+        """
+        Handle 'Engagement Invitation Created' event.
+
+        This is INSTANT invitation processing - replaces the 5-minute polling loop.
+        """
+        invitation_id = detail.get("invitation", {}).get("identifier")
+        if not invitation_id:
+            return {"error": "Missing invitation identifier"}
+
+        self.logger.info("Processing Engagement Invitation Created: %s", invitation_id)
+
+        # Check if already processed
+        existing = self.hubspot_client.search_deals_by_aws_invitation_id(invitation_id)
+        if existing:
+            self.logger.info(
+                "Invitation %s already processed as deal %s",
+                invitation_id,
+                existing[0]["id"],
+            )
+            return {"status": "already_processed", "dealId": existing[0]["id"]}
+
+        # Fetch invitation details (verify it exists)
+        _invitation = self.pc_client.get_engagement_invitation(
+            Catalog=PARTNER_CENTRAL_CATALOG,
+            Identifier=invitation_id,
+        )
+
+        # Accept the invitation
+        self.logger.info("Auto-accepting invitation %s", invitation_id)
+
+        client_token = f"eb-accept-{uuid.uuid4()}"
+        task_response = self.pc_client.start_engagement_by_accepting_invitation_task(
+            Catalog=PARTNER_CENTRAL_CATALOG,
+            Identifier=invitation_id,
+            ClientToken=client_token,
+        )
+
+        opportunity_id = task_response.get("OpportunityId")
+        task_status = task_response.get("TaskStatus", "")
+
+        self.logger.info(
+            "Invitation accepted: task_status=%s opportunity=%s",
+            task_status,
             opportunity_id,
         )
-        _create_closed_lost_notification(hubspot, deal_id, opportunity_id)
 
-        # Update other fields but NOT the stage
-        updates = {
-            "aws_review_status": lifecycle.get("ReviewStatus", ""),
+        # Fetch opportunity
+        if not opportunity_id:
+            self.logger.warning("No opportunity ID returned from acceptance task")
+            return {"status": "accepted_no_opportunity", "invitationId": invitation_id}
+
+        opportunity = self.pc_client.get_opportunity(
+            Catalog=PARTNER_CENTRAL_CATALOG,
+            Identifier=opportunity_id,
+        )
+
+        # Create HubSpot deal
+        hs_properties = partner_central_opportunity_to_hubspot(
+            opportunity, invitation_id=invitation_id
+        )
+        deal = self.hubspot_client.create_deal(hs_properties)
+
+        self.logger.info(
+            "Created HubSpot deal %s from invitation %s", deal["id"], invitation_id
+        )
+
+        return {
+            "status": "accepted_and_created",
+            "dealId": deal["id"],
+            "opportunityId": opportunity_id,
+            "invitationId": invitation_id,
+            "source": "eventbridge_realtime",
         }
-    else:
-        # Normal sync: update all fields including stage
-        updates = {
-            "aws_review_status": lifecycle.get("ReviewStatus", ""),
-            "dealstage": _map_stage_to_hubspot(pc_stage),
-        }
 
-    # Sync description if changed (but never the title - it's immutable)
-    business_problem = project.get("CustomerBusinessProblem")
-    if business_problem:
-        updates["description"] = business_problem
+    def _map_stage_to_hubspot(self, pc_stage: str) -> str:
+        """Map PC stage back to HubSpot deal stage."""
+        from common.mappers import PC_STAGE_TO_HUBSPOT
 
-    # Sync close date if changed
-    target_close = lifecycle.get("TargetCloseDate")
-    if target_close:
-        from datetime import datetime
+        return PC_STAGE_TO_HUBSPOT.get(pc_stage, "appointmentscheduled")
 
+    def _create_closed_lost_notification(
+        self, deal_id: str, opportunity_id: str
+    ) -> None:
+        """
+        Create a HubSpot task notification when AWS marks an opportunity as Closed Lost.
+
+        Instead of automatically updating the HubSpot deal to closed lost, we create a
+        high-priority task asking the sales rep to reach out to the AWS Account Executive
+        to understand why the opportunity was closed lost.
+        """
         try:
-            dt = datetime.strptime(target_close, "%Y-%m-%d")
-            updates["closedate"] = dt.isoformat() + "Z"
-        except ValueError:
-            pass
+            # Get deal details to find owner
+            deal = self.hubspot_client.get_deal(deal_id)
+            owner_id = deal.get("properties", {}).get("hubspot_owner_id")
+            deal_name = deal.get("properties", {}).get("dealname", "Unknown Deal")
 
-    # Sync AWS summary data if available
-    if aws_summary:
-        insights = aws_summary.get("Insights", {})
-        engagement_score = insights.get("EngagementScore")
-        if engagement_score is not None:
-            updates["aws_engagement_score"] = str(engagement_score)
+            # Calculate due date (1 business day for high priority)
+            from datetime import datetime, timedelta, timezone
 
-        aws_involvement = aws_summary.get("LifeCycle", {}).get("InvolvementType")
-        if aws_involvement:
-            updates["aws_involvement_type"] = aws_involvement
+            due_date = datetime.now(timezone.utc) + timedelta(days=1)
 
-    # Update HubSpot
-    hubspot.update_deal(deal_id, updates)
+            # Create task with detailed message
+            task_subject = f"🚨 AWS Marked Opportunity as Closed Lost: {deal_name}"
+            task_body = (
+                f"AWS Partner Central has marked this opportunity (ID: {opportunity_id}) as Closed Lost.\n\n"
+                f"⚠️ This deal has NOT been automatically marked as closed lost in HubSpot.\n\n"
+                f"ACTION REQUIRED:\n"
+                f"Please reach out to your AWS Account Executive to:\n"
+                f"1. Understand why the opportunity was marked as closed lost\n"
+                f"2. Determine if there are any next steps or follow-up actions\n"
+                f"3. Update the HubSpot deal stage accordingly based on the conversation\n\n"
+                f"After speaking with AWS, update this deal's stage in HubSpot to reflect the actual status."
+            )
 
-    # Add a note about the AWS update
-    note_parts = ["🔄 AWS Updated Opportunity"]
-    if "ReviewStatus" in lifecycle:
-        note_parts.append(f"Review Status: {lifecycle['ReviewStatus']}")
-    if "Stage" in lifecycle:
-        note_parts.append(f"Stage: {lifecycle['Stage']}")
-    if aws_summary:
-        score = aws_summary.get("Insights", {}).get("EngagementScore")
-        if score:
-            note_parts.append(f"Engagement Score: {score}/100")
-
-    hubspot.add_note_to_deal(deal_id, "\n".join(note_parts))
-
-    logger.info("Synced PC updates to HubSpot deal %s", deal_id)
-
-    return {
-        "status": "synced",
-        "dealId": deal_id,
-        "opportunityId": opportunity_id,
-        "updatedFields": list(updates.keys()),
-    }
-
-
-def _handle_invitation_created(detail: dict, hubspot: HubSpotClient, pc_client) -> dict:
-    """
-    Handle 'Engagement Invitation Created' event.
-
-    This is INSTANT invitation processing - replaces the 5-minute polling loop.
-    """
-    invitation_id = detail.get("invitation", {}).get("identifier")
-    if not invitation_id:
-        return {"error": "Missing invitation identifier"}
-
-    logger.info("Processing Engagement Invitation Created: %s", invitation_id)
-
-    # Check if already processed
-    existing = hubspot.search_deals_by_aws_invitation_id(invitation_id)
-    if existing:
-        logger.info(
-            "Invitation %s already processed as deal %s",
-            invitation_id,
-            existing[0]["id"],
-        )
-        return {"status": "already_processed", "dealId": existing[0]["id"]}
-
-    # Fetch invitation details
-    invitation = pc_client.get_engagement_invitation(
-        Catalog=PARTNER_CENTRAL_CATALOG,
-        Identifier=invitation_id,
-    )
-
-    # Accept the invitation
-    logger.info("Auto-accepting invitation %s", invitation_id)
-
-    client_token = f"eb-accept-{uuid.uuid4()}"
-    task_response = pc_client.start_engagement_by_accepting_invitation_task(
-        Catalog=PARTNER_CENTRAL_CATALOG,
-        Identifier=invitation_id,
-        ClientToken=client_token,
-    )
-
-    opportunity_id = task_response.get("OpportunityId")
-    task_status = task_response.get("TaskStatus", "")
-
-    logger.info(
-        "Invitation accepted: task_status=%s opportunity=%s",
-        task_status,
-        opportunity_id,
-    )
-
-    # Fetch opportunity
-    if not opportunity_id:
-        logger.warning("No opportunity ID returned from acceptance task")
-        return {"status": "accepted_no_opportunity", "invitationId": invitation_id}
-
-    opportunity = pc_client.get_opportunity(
-        Catalog=PARTNER_CENTRAL_CATALOG,
-        Identifier=opportunity_id,
-    )
-
-    # Create HubSpot deal
-    hs_properties = partner_central_opportunity_to_hubspot(
-        opportunity, invitation_id=invitation_id
-    )
-    deal = hubspot.create_deal(hs_properties)
-
-    logger.info("Created HubSpot deal %s from invitation %s", deal["id"], invitation_id)
-
-    return {
-        "status": "accepted_and_created",
-        "dealId": deal["id"],
-        "opportunityId": opportunity_id,
-        "invitationId": invitation_id,
-        "source": "eventbridge_realtime",
-    }
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _map_stage_to_hubspot(pc_stage: str) -> str:
-    """Map PC stage back to HubSpot deal stage."""
-    from common.mappers import PC_STAGE_TO_HUBSPOT
-
-    return PC_STAGE_TO_HUBSPOT.get(pc_stage, "appointmentscheduled")
-
-
-def _create_closed_lost_notification(
-    hubspot: HubSpotClient, deal_id: str, opportunity_id: str
-) -> None:
-    """
-    Create a HubSpot task notification when AWS marks an opportunity as Closed Lost.
-
-    Instead of automatically updating the HubSpot deal to closed lost, we create a
-    high-priority task asking the sales rep to reach out to the AWS Account Executive
-    to understand why the opportunity was closed lost.
-    """
-    try:
-        # Get deal details to find owner
-        deal = hubspot.get_deal(deal_id)
-        owner_id = deal.get("properties", {}).get("hubspot_owner_id")
-        deal_name = deal.get("properties", {}).get("dealname", "Unknown Deal")
-
-        # Calculate due date (1 business day for high priority)
-        from datetime import datetime, timedelta, timezone
-
-        due_date = datetime.now(timezone.utc) + timedelta(days=1)
-
-        # Create task with detailed message
-        task_subject = f"🚨 AWS Marked Opportunity as Closed Lost: {deal_name}"
-        task_body = (
-            f"AWS Partner Central has marked this opportunity (ID: {opportunity_id}) as Closed Lost.\n\n"
-            f"⚠️ This deal has NOT been automatically marked as closed lost in HubSpot.\n\n"
-            f"ACTION REQUIRED:\n"
-            f"Please reach out to your AWS Account Executive to:\n"
-            f"1. Understand why the opportunity was marked as closed lost\n"
-            f"2. Determine if there are any next steps or follow-up actions\n"
-            f"3. Update the HubSpot deal stage accordingly based on the conversation\n\n"
-            f"After speaking with AWS, update this deal's stage in HubSpot to reflect the actual status."
-        )
-
-        task_data = {
-            "properties": {
-                "hs_task_subject": task_subject,
-                "hs_task_body": task_body,
-                "hs_task_status": "NOT_STARTED",
-                "hs_task_priority": "HIGH",
-                "hs_timestamp": due_date.isoformat(),
+            task_data = {
+                "properties": {
+                    "hs_task_subject": task_subject,
+                    "hs_task_body": task_body,
+                    "hs_task_status": "NOT_STARTED",
+                    "hs_task_priority": "HIGH",
+                    "hs_timestamp": due_date.isoformat(),
+                }
             }
-        }
 
-        if owner_id:
-            task_data["properties"]["hubspot_owner_id"] = owner_id
+            if owner_id:
+                task_data["properties"]["hubspot_owner_id"] = owner_id
 
-        # Create the task
-        url = "https://api.hubapi.com/crm/v3/objects/tasks"
-        response = hubspot.session.post(url, json=task_data)
-        response.raise_for_status()
+            # Create the task
+            url = "https://api.hubapi.com/crm/v3/objects/tasks"
+            response = self.hubspot_client.session.post(url, json=task_data)
+            response.raise_for_status()
 
-        task_id = response.json().get("id")
-        logger.info(
-            "Created HubSpot task %s for closed lost notification on deal %s",
-            task_id,
-            deal_id,
-        )
+            task_id = response.json().get("id")
+            self.logger.info(
+                "Created HubSpot task %s for closed lost notification on deal %s",
+                task_id,
+                deal_id,
+            )
 
-        # Associate task with deal
-        assoc_url = f"https://api.hubapi.com/crm/v4/objects/tasks/{task_id}/associations/deals/{deal_id}"
-        assoc_data = [
-            {
-                "associationCategory": "HUBSPOT_DEFINED",
-                "associationTypeId": 216,  # Task to Deal association type
-            }
-        ]
-        hubspot.session.put(assoc_url, json=assoc_data)
+            # Associate task with deal
+            assoc_url = f"https://api.hubapi.com/crm/v4/objects/tasks/{task_id}/associations/deals/{deal_id}"
+            assoc_data = [
+                {
+                    "associationCategory": "HUBSPOT_DEFINED",
+                    "associationTypeId": 216,  # Task to Deal association type
+                }
+            ]
+            self.hubspot_client.session.put(assoc_url, json=assoc_data)
 
-        logger.info("Associated task %s with deal %s", task_id, deal_id)
+            self.logger.info("Associated task %s with deal %s", task_id, deal_id)
 
-        # Also add a note to the deal timeline for visibility
-        note_body = (
-            f"🚨 AWS Closed Lost Notification\n\n"
-            f"AWS Partner Central has marked opportunity {opportunity_id} as Closed Lost.\n\n"
-            f"A high-priority task has been created to reach out to the AWS AE for more information.\n"
-            f"The HubSpot deal stage has NOT been automatically updated."
-        )
-        hubspot.add_note_to_deal(deal_id, note_body)
+            # Also add a note to the deal timeline for visibility
+            note_body = (
+                f"🚨 AWS Closed Lost Notification\n\n"
+                f"AWS Partner Central has marked opportunity {opportunity_id} as Closed Lost.\n\n"
+                f"A high-priority task has been created to reach out to the AWS AE for more information.\n"
+                f"The HubSpot deal stage has NOT been automatically updated."
+            )
+            self.hubspot_client.add_note_to_deal(deal_id, note_body)
 
-    except Exception as e:
-        logger.error(
-            "Error creating closed lost notification for deal %s: %s",
-            deal_id,
-            str(e),
-            exc_info=True,
-        )
-        # Don't raise - we don't want to fail the entire sync if notification fails
+        except Exception as e:
+            self.logger.error(
+                "Error creating closed lost notification for deal %s: %s",
+                deal_id,
+                str(e),
+                exc_info=True,
+            )
+            # Don't raise - we don't want to fail the entire sync if notification fails
+
+
+def lambda_handler(event: dict, context: dict) -> dict:
+    """Lambda entry point for EventBridge event processing."""
+    return EventBridgeEventsHandler().handle(event, context)
