@@ -19,6 +19,9 @@ import sys
 
 sys.path.insert(0, "/var/task")
 
+from botocore.exceptions import ClientError
+from requests.exceptions import RequestException, HTTPError
+
 from common.aws_client import get_partner_central_client, PARTNER_CENTRAL_CATALOG
 from common.hubspot_client import HubSpotClient, HUBSPOT_API_BASE
 
@@ -142,9 +145,10 @@ def _sync_aws_summary(
             Catalog=PARTNER_CENTRAL_CATALOG,
             Identifier=opportunity_id,
         )
-    except Exception as exc:
+    except ClientError as exc:
         # AWS summary may not be available yet (too early in lifecycle)
-        if "NotFound" in str(exc) or "404" in str(exc):
+        error_code = exc.response.get('Error', {}).get('Code', '')
+        if error_code in ('ResourceNotFoundException', 'NotFound'):
             logger.info("AWS summary not available yet for %s", opportunity_id)
             return None
         raise

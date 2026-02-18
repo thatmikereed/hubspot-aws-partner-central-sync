@@ -16,6 +16,18 @@ from datetime import datetime, timedelta, date, timezone
 from typing import Optional
 
 # ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+# Minimum URL length for Partner Central WebsiteUrl field
+MIN_URL_LENGTH = 4
+MAX_URL_LENGTH = 255
+
+# Business problem constraints
+MIN_BUSINESS_PROBLEM_LENGTH = 20
+MAX_BUSINESS_PROBLEM_LENGTH = 2000
+
+# ---------------------------------------------------------------------------
 # Stage mappings
 # ---------------------------------------------------------------------------
 
@@ -403,19 +415,19 @@ def _sanitize_business_problem(raw: Optional[str], deal_name: str = "") -> str:
     If the raw value is too short or missing, synthesise a meaningful fallback.
     """
     text = (raw or "").strip()
-    if len(text) < 20:
-        # Build a fallback that always exceeds 20 chars
+    if len(text) < MIN_BUSINESS_PROBLEM_LENGTH:
+        # Build a fallback that always exceeds minimum length
         fallback = (
             f"HubSpot deal '{deal_name}' is being co-sold with AWS. "
             "The customer is evaluating AWS services to solve their business needs."
         )
         text = (text + " " + fallback).strip() if text else fallback
-    return text[:2000]
+    return text[:MAX_BUSINESS_PROBLEM_LENGTH]
 
 
 def _sanitize_website(url: Optional[str]) -> Optional[str]:
     """
-    Ensure WebsiteUrl is 4-255 chars and starts with https://.
+    Ensure WebsiteUrl meets Partner Central requirements (4-255 chars, starts with https://).
     Returns None if no valid URL is available.
     """
     if not url:
@@ -424,7 +436,7 @@ def _sanitize_website(url: Optional[str]) -> Optional[str]:
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
     # Return None if URL is too short after sanitization
-    return url[:255] if len(url) >= 4 else None
+    return url[:MAX_URL_LENGTH] if len(url) >= MIN_URL_LENGTH else None
 
 
 def _map_industry(raw: Optional[str]) -> str:
