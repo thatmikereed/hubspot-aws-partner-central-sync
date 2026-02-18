@@ -133,6 +133,7 @@ def _sync_aws_summary(
 ) -> dict | None:
     """
     Fetch AWS Opportunity Summary and sync to HubSpot.
+    Also checks if AWS marked the opportunity as Closed Lost and creates a notification.
     """
     logger.info("Fetching AWS summary for opportunity %s (deal %s)", opportunity_id, deal_id)
     
@@ -148,6 +149,24 @@ def _sync_aws_summary(
             logger.info("AWS summary not available yet for %s", opportunity_id)
             return None
         raise
+    
+    # Also fetch the full opportunity to check stage
+    try:
+        opportunity = pc_client.get_opportunity(
+            Catalog=PARTNER_CENTRAL_CATALOG,
+            Identifier=opportunity_id,
+        )
+        opp_lifecycle = opportunity.get("LifeCycle", {})
+        opp_stage = opp_lifecycle.get("Stage", "")
+        
+        # Check if AWS marked opportunity as "Closed Lost"
+        if opp_stage == "Closed Lost":
+            logger.info("Opportunity %s marked as Closed Lost by AWS - creating notification", opportunity_id)
+            _create_closed_lost_notification(hubspot, deal_id, opportunity_id)
+            # Don't sync stage to HubSpot, but continue with other updates
+    except Exception as exc:
+        logger.warning("Could not fetch full opportunity %s: %s", opportunity_id, exc)
+        opp_stage = None
     
     # Extract key fields
     lifecycle = summary.get("LifeCycle", {})
@@ -217,3 +236,79 @@ def _sync_aws_summary(
         "involvementType": involvement_type,
         "awsSeller": aws_seller,
     }
+
+
+def _create_closed_lost_notification(hubspot: HubSpotClient, deal_id: str, opportunity_id: str) -> None:
+    """
+    Create a HubSpot task notification when AWS marks an opportunity as Closed Lost.
+    
+    Instead of automatically updating the HubSpot deal to closed lost, we create a
+    high-priority task asking the sales rep to reach out to the AWS Account Executive
+    to understand why the opportunity was closed lost.
+    """
+    try:
+        # Get deal details to find owner
+        deal = hubspot.get_deal(deal_id)
+        owner_id = deal.get("properties", {}).get("hubspot_owner_id")
+        deal_name = deal.get("properties", {}).get("dealname", "Unknown Deal")
+        
+        # Calculate due date (1 business day for high priority)
+        from datetime import datetime, timedelta, timezone
+        due_date = datetime.now(timezone.utc) + timedelta(days=1)
+        
+        # Create task with detailed message
+        task_subject = f"🚨 AWS Marked Opportunity as Closed Lost: {deal_name}"
+        task_body = (
+            f"AWS Partner Central has marked this opportunity (ID: {opportunity_id}) as Closed Lost.\n\n"
+            f"⚠️ This deal has NOT been automatically marked as closed lost in HubSpot.\n\n"
+            f"ACTION REQUIRED:\n"
+            f"Please reach out to your AWS Account Executive to:\n"
+            f"1. Understand why the opportunity was marked as closed lost\n"
+            f"2. Determine if there are any next steps or follow-up actions\n"
+            f"3. Update the HubSpot deal stage accordingly based on the conversation\n\n"
+            f"After speaking with AWS, update this deal's stage in HubSpot to reflect the actual status."
+        )
+        
+        task_data = {
+            "properties": {
+                "hs_task_subject": task_subject,
+                "hs_task_body": task_body,
+                "hs_task_status": "NOT_STARTED",
+                "hs_task_priority": "HIGH",
+                "hs_timestamp": due_date.isoformat(),
+            }
+        }
+        
+        if owner_id:
+            task_data["properties"]["hubspot_owner_id"] = owner_id
+        
+        # Create the task
+        url = "https://api.hubapi.com/crm/v3/objects/tasks"
+        response = hubspot.session.post(url, json=task_data)
+        response.raise_for_status()
+        
+        task_id = response.json().get("id")
+        logger.info("Created HubSpot task %s for closed lost notification on deal %s", task_id, deal_id)
+        
+        # Associate task with deal
+        assoc_url = f"https://api.hubapi.com/crm/v4/objects/tasks/{task_id}/associations/deals/{deal_id}"
+        assoc_data = [{
+            "associationCategory": "HUBSPOT_DEFINED",
+            "associationTypeId": 216  # Task to Deal association type
+        }]
+        hubspot.session.put(assoc_url, json=assoc_data)
+        
+        logger.info("Associated task %s with deal %s", task_id, deal_id)
+        
+        # Also add a note to the deal timeline for visibility
+        note_body = (
+            f"🚨 AWS Closed Lost Notification\n\n"
+            f"AWS Partner Central has marked opportunity {opportunity_id} as Closed Lost.\n\n"
+            f"A high-priority task has been created to reach out to the AWS AE for more information.\n"
+            f"The HubSpot deal stage has NOT been automatically updated."
+        )
+        hubspot.add_note_to_deal(deal_id, note_body)
+        
+    except Exception as e:
+        logger.error("Error creating closed lost notification for deal %s: %s", deal_id, str(e), exc_info=True)
+        # Don't raise - we don't want to fail the entire sync if notification fails
