@@ -48,6 +48,29 @@ Parameters:
     Default: production
     AllowedValues: [production, staging, development]
 
+  # GCP Partners API Parameters
+  GcpPartnerId:
+    Type: String
+    Default: ""
+    Description: >
+      Google Cloud Partner ID from the GCP Partners Portal.
+      Required for GCP Partners API integration.
+
+  GcpServiceAccountKey:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: >
+      Base64-encoded JSON service account key for GCP Partners API access.
+      Leave blank if using instance metadata or other auth methods.
+
+  GcpPollIntervalMinutes:
+    Type: Number
+    Default: 15
+    MinValue: 5
+    MaxValue: 60
+    Description: How often (in minutes) to poll GCP Partners API for new opportunities
+
 # ============================================================
 # Globals
 # ============================================================
@@ -63,6 +86,7 @@ Globals:
         HUBSPOT_WEBHOOK_SECRET: !Ref HubSpotWebhookSecret
         PARTNER_CENTRAL_ROLE_ARN: !Ref PartnerCentralRoleArn
         PARTNER_CENTRAL_SOLUTION_ID: !Ref PartnerCentralSolutionId
+        GCP_PARTNER_ID: !Ref GcpPartnerId
         ENVIRONMENT: !Ref Environment
         LOG_LEVEL: INFO
 
@@ -139,6 +163,67 @@ Resources:
             Enabled: true
 
   # ----------------------------------------------------------
+  # Lambda 3: HubSpot Webhook → GCP Partners (for #GCP deals)
+  # ----------------------------------------------------------
+  HubSpotToGcpPartnersFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "hubspot-to-gcp-partners-${Environment}"
+      CodeUri: src/hubspot_to_gcp_partners/
+      Handler: handler.lambda_handler
+      Description: Receives HubSpot deal webhooks and creates GCP Partners opportunities
+      Layers:
+        - !Ref CommonLayer
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action:
+                - ssm:GetParameter
+              Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/hubspot-pc-sync/${Environment}/gcp-*"
+      Environment:
+        Variables:
+          GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-service-account.json
+      Events:
+        HubSpotWebhook:
+          Type: Api
+          Properties:
+            RestApiId: !Ref WebhookApi
+            Path: /webhook/hubspot/gcp
+            Method: POST
+
+  # ----------------------------------------------------------
+  # Lambda 4: GCP Partners → HubSpot (Scheduled)
+  # ----------------------------------------------------------
+  GcpPartnersToHubSpotFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "gcp-partners-to-hubspot-${Environment}"
+      CodeUri: src/gcp_partners_to_hubspot/
+      Handler: handler.lambda_handler
+      Description: Polls GCP Partners API for opportunities and syncs to HubSpot
+      Layers:
+        - !Ref CommonLayer
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action:
+                - ssm:GetParameter
+              Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/hubspot-pc-sync/${Environment}/gcp-*"
+      Environment:
+        Variables:
+          GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-service-account.json
+      Events:
+        ScheduledPoll:
+          Type: Schedule
+          Properties:
+            Schedule: !Sub "rate(${GcpPollIntervalMinutes} minutes)"
+            Name: !Sub "gcp-partners-poll-${Environment}"
+            Description: Polls GCP Partners API for new opportunities
+            Enabled: true
+
+  # ----------------------------------------------------------
   # API Gateway for inbound HubSpot webhooks
   # ----------------------------------------------------------
   WebhookApi:
@@ -163,6 +248,14 @@ Resources:
       Value: !Ref HubSpotAccessToken
       Description: HubSpot Private App access token
 
+  GcpServiceAccountKeyParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/hubspot-pc-sync/${Environment}/gcp-service-account-key"
+      Type: SecureString
+      Value: !Ref GcpServiceAccountKey
+      Description: GCP Service Account JSON key (base64 encoded)
+
   # ----------------------------------------------------------
   # CloudWatch Log Groups with retention
   # ----------------------------------------------------------
@@ -176,6 +269,18 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/partner-central-to-hubspot-${Environment}"
+      RetentionInDays: 30
+
+  HubSpotToGcpPartnersLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/hubspot-to-gcp-partners-${Environment}"
+      RetentionInDays: 30
+
+  GcpPartnersToHubSpotLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/gcp-partners-to-hubspot-${Environment}"
       RetentionInDays: 30
 
 # ============================================================
@@ -196,3 +301,16 @@ Outputs:
 
   ApiGatewayId:
     Value: !Ref WebhookApi
+
+  # GCP Integration Outputs
+  GcpWebhookUrl:
+    Description: >
+      HubSpot webhook URL for GCP deals — register this in your HubSpot app's webhook settings
+      for deals tagged with #GCP
+    Value: !Sub "https://${WebhookApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/webhook/hubspot/gcp"
+
+  HubSpotToGcpPartnersFunctionArn:
+    Value: !GetAtt HubSpotToGcpPartnersFunction.Arn
+
+  GcpPartnersToHubSpotFunctionArn:
+    Value: !GetAtt GcpPartnersToHubSpotFunction.Arn
