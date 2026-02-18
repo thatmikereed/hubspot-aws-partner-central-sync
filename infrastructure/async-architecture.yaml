@@ -1,0 +1,448 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Async Event-Driven Architecture for HubSpot Sync'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: production
+    AllowedValues: [production, staging, development]
+    Description: Deployment environment
+  
+  HubSpotAccessToken:
+    Type: String
+    NoEcho: true
+    Description: HubSpot Private App access token
+  
+  HubSpotWebhookSecret:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: HubSpot webhook signing secret (optional but recommended)
+  
+  PartnerCentralRoleArn:
+    Type: String
+    Description: ARN of the HubSpotPartnerCentralServiceRole
+  
+  PartnerCentralSolutionId:
+    Type: String
+    Default: ""
+    Description: Partner Central Solution ID (e.g. S-0000001)
+  
+  MicrosoftAccessToken:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: Microsoft Partner Center API access token
+
+Resources:
+  # ============================================================
+  # SQS FIFO Queues
+  # ============================================================
+  
+  HubSpotSyncQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${Environment}-hubspot-sync-events.fifo"
+      FifoQueue: true
+      ContentBasedDeduplication: true
+      MessageRetentionPeriod: 1209600  # 14 days
+      VisibilityTimeout: 300  # 5 minutes (longer than Lambda timeout)
+      ReceiveMessageWaitTimeSeconds: 20  # Long polling
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt HubSpotSyncDLQ.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Application
+          Value: HubSpotSync
+  
+  HubSpotSyncDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${Environment}-hubspot-sync-events-dlq.fifo"
+      FifoQueue: true
+      MessageRetentionPeriod: 1209600  # 14 days
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Application
+          Value: HubSpotSync
+  
+  MicrosoftSyncQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${Environment}-microsoft-sync-events.fifo"
+      FifoQueue: true
+      ContentBasedDeduplication: true
+      MessageRetentionPeriod: 1209600
+      VisibilityTimeout: 300
+      ReceiveMessageWaitTimeSeconds: 20
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt MicrosoftSyncDLQ.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+  
+  MicrosoftSyncDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${Environment}-microsoft-sync-events-dlq.fifo"
+      FifoQueue: true
+      MessageRetentionPeriod: 1209600
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+  
+  AWSSyncQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${Environment}-aws-sync-events.fifo"
+      FifoQueue: true
+      ContentBasedDeduplication: true
+      MessageRetentionPeriod: 1209600
+      VisibilityTimeout: 300
+      ReceiveMessageWaitTimeSeconds: 20
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt AWSSyncDLQ.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+  
+  AWSSyncDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${Environment}-aws-sync-events-dlq.fifo"
+      FifoQueue: true
+      MessageRetentionPeriod: 1209600
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+  
+  # ============================================================
+  # IAM Roles
+  # ============================================================
+  
+  WebhookReceiptRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Environment}-webhook-receipt-handler-role"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: SQSSendMessage
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                  - sqs:GetQueueUrl
+                Resource:
+                  - !GetAtt HubSpotSyncQueue.Arn
+                  - !GetAtt MicrosoftSyncQueue.Arn
+                  - !GetAtt AWSSyncQueue.Arn
+                  - !GetAtt HubSpotSyncDLQ.Arn
+                  - !GetAtt MicrosoftSyncDLQ.Arn
+                  - !GetAtt AWSSyncDLQ.Arn
+  
+  EventProcessorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Environment}-event-processor-role"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: SQSProcessing
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource:
+                  - !GetAtt HubSpotSyncQueue.Arn
+                  - !GetAtt MicrosoftSyncQueue.Arn
+                  - !GetAtt AWSSyncQueue.Arn
+        - PolicyName: AssumePartnerCentralRole
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: sts:AssumeRole
+                Resource: !Ref PartnerCentralRoleArn
+  
+  # ============================================================
+  # Lambda Functions
+  # ============================================================
+  
+  WebhookReceiptHandler:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${Environment}-webhook-receipt-handler"
+      Runtime: python3.12
+      Handler: webhook_receipt.handler.lambda_handler
+      Role: !GetAtt WebhookReceiptRole.Arn
+      Timeout: 10
+      MemorySize: 256
+      Architectures: [arm64]
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              return {"statusCode": 200, "body": "Placeholder"}
+      Environment:
+        Variables:
+          HUBSPOT_SYNC_QUEUE_URL: !Ref HubSpotSyncQueue
+          MICROSOFT_SYNC_QUEUE_URL: !Ref MicrosoftSyncQueue
+          AWS_SYNC_QUEUE_URL: !Ref AWSSyncQueue
+          DLQ_URL: !Ref HubSpotSyncDLQ
+          HUBSPOT_WEBHOOK_SECRET: !Ref HubSpotWebhookSecret
+          ENVIRONMENT: !Ref Environment
+          LOG_LEVEL: INFO
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+  
+  EventProcessor:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${Environment}-event-processor"
+      Runtime: python3.12
+      Handler: event_processor.handler.lambda_handler
+      Role: !GetAtt EventProcessorRole.Arn
+      Timeout: 240  # 4 minutes (under SQS visibility timeout)
+      MemorySize: 512
+      Architectures: [arm64]
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              return {"statusCode": 200, "body": "Placeholder"}
+      Environment:
+        Variables:
+          HUBSPOT_ACCESS_TOKEN: !Ref HubSpotAccessToken
+          HUBSPOT_WEBHOOK_SECRET: !Ref HubSpotWebhookSecret
+          PARTNER_CENTRAL_ROLE_ARN: !Ref PartnerCentralRoleArn
+          PARTNER_CENTRAL_SOLUTION_ID: !Ref PartnerCentralSolutionId
+          MICROSOFT_ACCESS_TOKEN: !Ref MicrosoftAccessToken
+          ENVIRONMENT: !Ref Environment
+          LOG_LEVEL: INFO
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+  
+  # ============================================================
+  # Event Source Mappings (SQS to Lambda)
+  # ============================================================
+  
+  HubSpotQueueEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt HubSpotSyncQueue.Arn
+      FunctionName: !Ref EventProcessor
+      BatchSize: 1  # Process one at a time for reliability
+      MaximumBatchingWindowInSeconds: 0
+  
+  MicrosoftQueueEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt MicrosoftSyncQueue.Arn
+      FunctionName: !Ref EventProcessor
+      BatchSize: 1
+      MaximumBatchingWindowInSeconds: 0
+  
+  AWSQueueEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt AWSSyncQueue.Arn
+      FunctionName: !Ref EventProcessor
+      BatchSize: 1
+      MaximumBatchingWindowInSeconds: 0
+  
+  # ============================================================
+  # API Gateway
+  # ============================================================
+  
+  WebhookApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub "${Environment}-hubspot-sync-webhooks"
+      ProtocolType: HTTP
+      Description: Webhook receiver for async sync architecture
+      CorsConfiguration:
+        AllowOrigins:
+          - '*'
+        AllowMethods:
+          - POST
+        AllowHeaders:
+          - '*'
+  
+  WebhookApiIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebhookApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WebhookReceiptHandler.Arn}/invocations"
+      PayloadFormatVersion: '2.0'
+  
+  WebhookApiRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebhookApi
+      RouteKey: 'POST /webhook/{source}'
+      Target: !Sub "integrations/${WebhookApiIntegration}"
+  
+  WebhookApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref WebhookApi
+      StageName: !Ref Environment
+      AutoDeploy: true
+  
+  WebhookApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref WebhookReceiptHandler
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WebhookApi}/*/*"
+  
+  # ============================================================
+  # CloudWatch Alarms
+  # ============================================================
+  
+  DLQAlarmHubSpot:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${Environment}-hubspot-sync-dlq-messages"
+      AlarmDescription: "Critical: Messages in HubSpot sync DLQ"
+      MetricName: ApproximateNumberOfMessagesVisible
+      Namespace: AWS/SQS
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt HubSpotSyncDLQ.QueueName
+      TreatMissingData: notBreaching
+  
+  QueueAgeAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${Environment}-hubspot-sync-queue-age"
+      AlarmDescription: "Warning: Messages stuck in queue"
+      MetricName: ApproximateAgeOfOldestMessage
+      Namespace: AWS/SQS
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 300  # 5 minutes
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt HubSpotSyncQueue.QueueName
+      TreatMissingData: notBreaching
+  
+  ProcessorErrorRateAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${Environment}-event-processor-errors"
+      AlarmDescription: "Warning: High error rate in event processor"
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref EventProcessor
+      TreatMissingData: notBreaching
+  
+  ProcessorThrottleAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${Environment}-event-processor-throttles"
+      AlarmDescription: "Critical: Lambda throttling detected"
+      MetricName: Throttles
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref EventProcessor
+      TreatMissingData: notBreaching
+  
+  # ============================================================
+  # CloudWatch Log Groups
+  # ============================================================
+  
+  WebhookReceiptLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${WebhookReceiptHandler}"
+      RetentionInDays: 30
+  
+  EventProcessorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${EventProcessor}"
+      RetentionInDays: 30
+
+Outputs:
+  HubSpotSyncQueueUrl:
+    Description: URL of the HubSpot sync queue
+    Value: !Ref HubSpotSyncQueue
+    Export:
+      Name: !Sub "${Environment}-HubSpotSyncQueueUrl"
+  
+  MicrosoftSyncQueueUrl:
+    Description: URL of the Microsoft sync queue
+    Value: !Ref MicrosoftSyncQueue
+    Export:
+      Name: !Sub "${Environment}-MicrosoftSyncQueueUrl"
+  
+  AWSSyncQueueUrl:
+    Description: URL of the AWS sync queue
+    Value: !Ref AWSSyncQueue
+    Export:
+      Name: !Sub "${Environment}-AWSSyncQueueUrl"
+  
+  HubSpotDLQUrl:
+    Description: URL of the HubSpot DLQ
+    Value: !Ref HubSpotSyncDLQ
+  
+  WebhookReceiptHandlerArn:
+    Description: ARN of the webhook receipt handler
+    Value: !GetAtt WebhookReceiptHandler.Arn
+  
+  EventProcessorArn:
+    Description: ARN of the event processor
+    Value: !GetAtt EventProcessor.Arn
+  
+  WebhookApiEndpoint:
+    Description: Webhook API endpoint URL
+    Value: !Sub "https://${WebhookApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}"
