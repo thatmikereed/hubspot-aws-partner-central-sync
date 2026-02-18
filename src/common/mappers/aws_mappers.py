@@ -30,6 +30,9 @@ spec.loader.exec_module(_mappers)
 # Main transformation functions
 hubspot_deal_to_partner_central = _mappers.hubspot_deal_to_partner_central
 hubspot_deal_to_partner_central_update = _mappers.hubspot_deal_to_partner_central_update
+hubspot_deal_to_partner_central_updates = (
+    _mappers.hubspot_deal_to_partner_central_updates
+)
 partner_central_opportunity_to_hubspot = _mappers.partner_central_opportunity_to_hubspot
 
 # Constants
@@ -48,6 +51,7 @@ _build_spend = _mappers._build_spend
 __all__ = [
     "hubspot_deal_to_partner_central",
     "hubspot_deal_to_partner_central_update",
+    "hubspot_deal_to_partner_central_updates",
     "partner_central_opportunity_to_hubspot",
     "HUBSPOT_STAGE_TO_PC",
     "PC_STAGE_TO_HUBSPOT",

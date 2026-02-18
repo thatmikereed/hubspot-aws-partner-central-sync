@@ -1,8 +1,28 @@
 """Webhook Health Check - Monitor webhook delivery"""
-import json, logging, sys
-sys.path.insert(0, "/var/task")
-logger = logging.getLogger(); logger.setLevel(logging.INFO)
 
-def lambda_handler(event: dict, context) -> dict:
-    logger.info("Webhook health")
-    return {"statusCode": 200, "body": json.dumps({"status": "healthy"})}
+
+from common.base_handler import BaseLambdaHandler
+
+
+class WebhookHealthHandler(BaseLambdaHandler):
+    """Handler for webhook health checks."""
+
+    def _execute(self, event: dict, context: dict) -> dict:
+        """
+        Handle webhook health check.
+
+        Args:
+            event: Lambda event
+            context: Lambda context
+
+        Returns:
+            HTTP response
+        """
+        self.logger.info("Webhook health")
+        return self._success_response({"status": "healthy"})
+
+
+def lambda_handler(event: dict, context: dict) -> dict:
+    """Lambda handler entry point."""
+    handler = WebhookHealthHandler()
+    return handler.handle(event, context)

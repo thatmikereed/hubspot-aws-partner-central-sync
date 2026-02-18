@@ -122,7 +122,7 @@ def test_closed_lost_creates_notification_instead_of_updating_stage(
     Test that when AWS marks an opportunity as Closed Lost, we create a
     notification task instead of automatically updating the HubSpot deal stage.
     """
-    from eventbridge_events.handler import _handle_opportunity_updated
+    from eventbridge_events.handler import EventBridgeEventsHandler
 
     # Setup mock responses
     mock_hubspot_client.search_deals_by_aws_opportunity_id.return_value = [
@@ -149,7 +149,10 @@ def test_closed_lost_creates_notification_instead_of_updating_stage(
     detail = {"opportunity": {"identifier": "O1234567890"}}
 
     # Execute
-    result = _handle_opportunity_updated(detail, mock_hubspot_client, mock_pc_client)
+    handler = EventBridgeEventsHandler()
+    handler._hubspot_client = mock_hubspot_client
+    handler._pc_client = mock_pc_client
+    result = handler._handle_opportunity_updated(detail)
 
     # Verify task was created
     assert mock_hubspot_client.session.post.called
@@ -193,7 +196,7 @@ def test_non_closed_lost_stage_updates_normally(
     """
     Test that non-Closed Lost stage changes still sync normally to HubSpot.
     """
-    from eventbridge_events.handler import _handle_opportunity_updated
+    from eventbridge_events.handler import EventBridgeEventsHandler
 
     # Setup mock responses
     mock_hubspot_client.search_deals_by_aws_opportunity_id.return_value = [
@@ -208,7 +211,10 @@ def test_non_closed_lost_stage_updates_normally(
     detail = {"opportunity": {"identifier": "O1234567890"}}
 
     # Execute
-    result = _handle_opportunity_updated(detail, mock_hubspot_client, mock_pc_client)
+    handler = EventBridgeEventsHandler()
+    handler._hubspot_client = mock_hubspot_client
+    handler._pc_client = mock_pc_client
+    result = handler._handle_opportunity_updated(detail)
 
     # Verify deal was updated with the stage
     assert mock_hubspot_client.update_deal.called
@@ -238,7 +244,7 @@ def test_closed_lost_notification_without_deal_owner(
     """
     Test that closed lost notification works even when deal has no owner.
     """
-    from eventbridge_events.handler import _handle_opportunity_updated
+    from eventbridge_events.handler import EventBridgeEventsHandler
 
     # Setup mock responses with no owner
     mock_hubspot_client.search_deals_by_aws_opportunity_id.return_value = [
@@ -265,7 +271,10 @@ def test_closed_lost_notification_without_deal_owner(
     detail = {"opportunity": {"identifier": "O1234567890"}}
 
     # Execute - should not raise exception
-    result = _handle_opportunity_updated(detail, mock_hubspot_client, mock_pc_client)
+    handler = EventBridgeEventsHandler()
+    handler._hubspot_client = mock_hubspot_client
+    handler._pc_client = mock_pc_client
+    result = handler._handle_opportunity_updated(detail)
 
     # Verify task was still created
     assert mock_hubspot_client.session.post.called

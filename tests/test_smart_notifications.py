@@ -11,7 +11,7 @@ from datetime import datetime
 @pytest.fixture
 def mock_hubspot_client():
     """Mock HubSpotClient."""
-    with patch('smart_notifications.handler.HubSpotClient') as mock:
+    with patch('common.hubspot_client.HubSpotClient') as mock:
         client = MagicMock()
         mock.return_value = client
         yield client
@@ -20,7 +20,7 @@ def mock_hubspot_client():
 @pytest.fixture
 def mock_pc_client():
     """Mock Partner Central client."""
-    with patch('smart_notifications.handler.get_partner_central_client') as mock:
+    with patch('common.aws_client.get_partner_central_client') as mock:
         client = MagicMock()
         mock.return_value = client
         yield client

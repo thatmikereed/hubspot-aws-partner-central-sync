@@ -1,10 +1,28 @@
 """Referral Management - Track referral opportunities"""
-import json, logging, sys
-sys.path.insert(0, "/var/task")
-from common.aws_client import get_partner_central_client
-from common.hubspot_client import HubSpotClient
-logger = logging.getLogger(); logger.setLevel(logging.INFO)
 
-def lambda_handler(event: dict, context) -> dict:
-    logger.info("Referral mgmt")
-    return {"statusCode": 200, "body": json.dumps({"status": "ok"})}
+
+from common.base_handler import BaseLambdaHandler
+
+
+class ReferralMgmtHandler(BaseLambdaHandler):
+    """Handler for referral management operations."""
+
+    def _execute(self, event: dict, context: dict) -> dict:
+        """
+        Handle referral management operations.
+
+        Args:
+            event: Lambda event
+            context: Lambda context
+
+        Returns:
+            HTTP response
+        """
+        self.logger.info("Referral mgmt")
+        return self._success_response({"status": "ok"})
+
+
+def lambda_handler(event: dict, context: dict) -> dict:
+    """Lambda handler entry point."""
+    handler = ReferralMgmtHandler()
+    return handler.handle(event, context)

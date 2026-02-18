@@ -10,6 +10,7 @@ by domain (AWS, HubSpot, etc.) while maintaining backward compatibility.
 from .aws_mappers import (
     hubspot_deal_to_partner_central,
     hubspot_deal_to_partner_central_update,
+    hubspot_deal_to_partner_central_updates,
     partner_central_opportunity_to_hubspot,
     # Also expose constants and utility functions for backward compatibility
     HUBSPOT_STAGE_TO_PC,
@@ -26,6 +27,7 @@ from .aws_mappers import (
 __all__ = [
     "hubspot_deal_to_partner_central",
     "hubspot_deal_to_partner_central_update",
+    "hubspot_deal_to_partner_central_updates",
     "partner_central_opportunity_to_hubspot",
     "HUBSPOT_STAGE_TO_PC",
     "PC_STAGE_TO_HUBSPOT",
