@@ -6,7 +6,6 @@ import json
 import uuid
 from datetime import datetime, timezone
 
-import pytest
 
 from common.events import (
     EventType,
@@ -38,7 +37,7 @@ def test_sync_event_creation():
         object_id="12345",
         object_type="deal",
     )
-    
+
     assert event.event_type == EventType.DEAL_CREATION
     assert event.event_source == EventSource.HUBSPOT
     assert event.object_id == "12345"
@@ -55,7 +54,7 @@ def test_sync_event_with_all_fields():
     event_id = str(uuid.uuid4())
     correlation_id = str(uuid.uuid4())
     timestamp = datetime.now(timezone.utc)
-    
+
     event = SyncEvent(
         event_id=event_id,
         event_type=EventType.DEAL_PROPERTY_CHANGE,
@@ -67,11 +66,14 @@ def test_sync_event_with_all_fields():
         correlation_id=correlation_id,
         attempt_count=1,
     )
-    
+
     assert event.event_id == event_id
     assert event.event_type == EventType.DEAL_PROPERTY_CHANGE
     assert event.object_id == "67890"
-    assert event.properties == {"propertyName": "dealname", "propertyValue": "Test Deal"}
+    assert event.properties == {
+        "propertyName": "dealname",
+        "propertyValue": "Test Deal",
+    }
     assert event.correlation_id == correlation_id
     assert event.attempt_count == 1
 
@@ -84,17 +86,17 @@ def test_sync_event_to_sqs_message():
         object_id="12345",
         object_type="deal",
     )
-    
+
     sqs_message = event.to_sqs_message()
-    
+
     assert "MessageBody" in sqs_message
     assert "MessageGroupId" in sqs_message
     assert "MessageDeduplicationId" in sqs_message
-    
+
     # Verify FIFO attributes
     assert sqs_message["MessageGroupId"] == "12345"  # object_id
     assert sqs_message["MessageDeduplicationId"] == event.event_id
-    
+
     # Verify body is valid JSON
     body = json.loads(sqs_message["MessageBody"])
     assert body["event_type"] == "deal.creation"
@@ -110,13 +112,13 @@ def test_sync_event_from_sqs_message():
         object_type="deal",
         properties={"test": "value"},
     )
-    
+
     # Convert to SQS message and back
     sqs_message = event.to_sqs_message()
     sqs_record = {"Body": sqs_message["MessageBody"]}
-    
+
     restored_event = SyncEvent.from_sqs_message(sqs_record)
-    
+
     assert restored_event.event_id == event.event_id
     assert restored_event.event_type == event.event_type
     assert restored_event.event_source == event.event_source
@@ -138,9 +140,9 @@ def test_sync_event_from_hubspot_webhook_deal_creation():
         "appId": "222",
         "occurredAt": "2024-01-01T12:00:00Z",
     }
-    
+
     event = SyncEvent.from_hubspot_webhook(webhook_event)
-    
+
     assert event.event_type == EventType.DEAL_CREATION
     assert event.event_source == EventSource.HUBSPOT
     assert event.object_id == "12345"
@@ -158,9 +160,9 @@ def test_sync_event_from_hubspot_webhook_deal_property_change():
         "propertyName": "amount",
         "propertyValue": "50000",
     }
-    
+
     event = SyncEvent.from_hubspot_webhook(webhook_event)
-    
+
     assert event.event_type == EventType.DEAL_PROPERTY_CHANGE
     assert event.event_source == EventSource.HUBSPOT
     assert event.object_id == "54321"
@@ -175,9 +177,9 @@ def test_sync_event_from_hubspot_webhook_company_property_change():
         "propertyName": "industry",
         "propertyValue": "Technology",
     }
-    
+
     event = SyncEvent.from_hubspot_webhook(webhook_event)
-    
+
     assert event.event_type == EventType.COMPANY_PROPERTY_CHANGE
     assert event.event_source == EventSource.HUBSPOT
     assert event.object_id == "99999"
@@ -190,9 +192,9 @@ def test_sync_event_from_hubspot_webhook_note_creation():
         "subscriptionType": "engagement.creation",
         "objectId": "88888",
     }
-    
+
     event = SyncEvent.from_hubspot_webhook(webhook_event)
-    
+
     assert event.event_type == EventType.ENGAGEMENT_CREATION
     assert event.event_source == EventSource.HUBSPOT
     assert event.object_id == "88888"
@@ -207,9 +209,9 @@ def test_sync_event_to_dict():
         object_id="12345",
         object_type="deal",
     )
-    
+
     event_dict = event.to_dict()
-    
+
     assert isinstance(event_dict, dict)
     assert event_dict["event_type"] == "deal.creation"
     assert event_dict["event_source"] == "hubspot"
@@ -228,9 +230,9 @@ def test_event_batch_creation():
         )
         for i in range(5)
     ]
-    
+
     batch = EventBatch(events=events)
-    
+
     assert len(batch.events) == 5
     assert batch.batch_id is not None
 
@@ -246,10 +248,10 @@ def test_event_batch_to_sqs_messages():
         )
         for i in range(3)
     ]
-    
+
     batch = EventBatch(events=events)
     sqs_messages = batch.to_sqs_messages()
-    
+
     assert len(sqs_messages) == 3
     for msg in sqs_messages:
         assert "MessageBody" in msg
@@ -260,7 +262,7 @@ def test_event_batch_to_sqs_messages():
 def test_timestamp_parsing():
     """Test timestamp parsing from string."""
     timestamp_str = "2024-01-01T12:00:00Z"
-    
+
     event = SyncEvent(
         event_type=EventType.DEAL_CREATION,
         event_source=EventSource.HUBSPOT,
@@ -268,24 +270,23 @@ def test_timestamp_parsing():
         object_type="deal",
         timestamp=timestamp_str,
     )
-    
+
     assert isinstance(event.timestamp, datetime)
 
 
 def test_correlation_id_in_from_hubspot_webhook():
     """Test custom correlation ID is preserved."""
     custom_correlation_id = str(uuid.uuid4())
-    
+
     webhook_event = {
         "subscriptionType": "deal.creation",
         "objectId": "12345",
     }
-    
+
     event = SyncEvent.from_hubspot_webhook(
-        webhook_event,
-        correlation_id=custom_correlation_id
+        webhook_event, correlation_id=custom_correlation_id
     )
-    
+
     assert event.correlation_id == custom_correlation_id
 
 
@@ -303,12 +304,12 @@ def test_event_roundtrip_preserves_data():
         },
         attempt_count=2,
     )
-    
+
     # Convert to SQS and back
     sqs_message = original_event.to_sqs_message()
     sqs_record = {"Body": sqs_message["MessageBody"]}
     restored_event = SyncEvent.from_sqs_message(sqs_record)
-    
+
     # Verify all fields preserved
     assert restored_event.event_id == original_event.event_id
     assert restored_event.event_type == original_event.event_type

@@ -33,24 +33,24 @@ def process_hubspot_deal_creation(
 ) -> Dict[str, Any]:
     """
     Process HubSpot deal creation event.
-    
+
     Args:
         sync_event: SyncEvent with deal creation data
         hubspot_client: HubSpot API client
         pc_client: Partner Central API client
         logger: Logger instance
-        
+
     Returns:
         Processing result dict
     """
     deal_id = sync_event.object_id
-    
+
     # Fetch deal with associations
     deal, company, contacts = hubspot_client.get_deal_with_associations(deal_id)
     deal_name = deal.get("properties", {}).get("dealname", "")
-    
+
     logger.info(f"Processing deal creation {deal_id}: '{deal_name}'")
-    
+
     # Check for AWS trigger tag
     if AWS_TRIGGER_TAG.lower() not in deal_name.lower():
         logger.info(f"Deal '{deal_name}' does not contain {AWS_TRIGGER_TAG} — skipping")
@@ -60,7 +60,7 @@ def process_hubspot_deal_creation(
             "dealId": deal_id,
             "dealName": deal_name,
         }
-    
+
     # Idempotency: skip if already synced
     existing_pc_id = deal.get("properties", {}).get("aws_opportunity_id")
     if existing_pc_id:
@@ -71,14 +71,14 @@ def process_hubspot_deal_creation(
             "dealId": deal_id,
             "partnerCentralOpportunityId": existing_pc_id,
         }
-    
+
     # Build and submit the payload
     pc_payload = hubspot_deal_to_partner_central(deal, company, contacts)
     logger.info(
         f"Creating PC opportunity for deal {deal_id} with payload keys: "
         f"{list(pc_payload.keys())}"
     )
-    
+
     pc_response = pc_client.create_opportunity(
         Catalog=PARTNER_CENTRAL_CATALOG,
         ClientToken=pc_payload["ClientToken"],
@@ -91,15 +91,13 @@ def process_hubspot_deal_creation(
         LifeCycle=pc_payload["LifeCycle"],
         Project=pc_payload["Project"],
     )
-    
+
     opportunity_id = pc_response.get("Id", "")
     logger.info(f"Created PC opportunity {opportunity_id} for deal {deal_id}")
-    
+
     # Associate solutions
-    associated_solutions = _associate_solutions(
-        deal, pc_client, opportunity_id, logger
-    )
-    
+    associated_solutions = _associate_solutions(deal, pc_client, opportunity_id, logger)
+
     # Write the PC Opportunity ID and canonical title back to HubSpot
     hubspot_client.update_deal(
         deal_id,
@@ -110,7 +108,7 @@ def process_hubspot_deal_creation(
             "aws_review_status": "Pending Submission",
         },
     )
-    
+
     return {
         "action": "created",
         "hubspotDealId": deal_id,
@@ -129,22 +127,22 @@ def process_hubspot_deal_update(
 ) -> Dict[str, Any]:
     """
     Process HubSpot deal property change event.
-    
+
     Args:
         sync_event: SyncEvent with deal update data
         hubspot_client: HubSpot API client
         pc_client: Partner Central API client
         logger: Logger instance
-        
+
     Returns:
         Processing result dict
     """
     deal_id = sync_event.object_id
-    
+
     # Fetch deal with associations
     deal, company, contacts = hubspot_client.get_deal_with_associations(deal_id)
     props = deal.get("properties", {})
-    
+
     # Only sync deals that are already in PC
     opportunity_id = props.get("aws_opportunity_id")
     if not opportunity_id:
@@ -154,60 +152,71 @@ def process_hubspot_deal_update(
             "reason": "not_synced",
             "dealId": deal_id,
         }
-    
+
     # The deal must still have #AWS to stay in sync scope
     deal_name = props.get("dealname", "")
     if AWS_TRIGGER_TAG.lower() not in deal_name.lower():
-        logger.info(f"Deal {deal_id} no longer contains {AWS_TRIGGER_TAG} — skipping update")
+        logger.info(
+            f"Deal {deal_id} no longer contains {AWS_TRIGGER_TAG} — skipping update"
+        )
         return {
             "action": "skipped",
             "reason": "no_aws_tag",
             "dealId": deal_id,
         }
-    
+
     # Get changed property from event
     changed_property = sync_event.properties.get("propertyName", "")
     changed_properties = {changed_property} if changed_property else set()
-    
+
     # Fetch current PC state to check review status and title
     current_pc_opp = _get_pc_opportunity(pc_client, opportunity_id, logger)
     if not current_pc_opp:
-        logger.warning(f"Could not fetch PC opportunity {opportunity_id} — skipping update")
+        logger.warning(
+            f"Could not fetch PC opportunity {opportunity_id} — skipping update"
+        )
         return {
             "action": "error",
             "reason": "pc_fetch_failed",
             "dealId": deal_id,
             "partnerCentralOpportunityId": opportunity_id,
         }
-    
+
     # Build the update payload
     update_payload, warnings = hubspot_deal_to_partner_central_update(
         deal, current_pc_opp, company, contacts, changed_properties
     )
-    
+
     # Surface warnings back to HubSpot as notes
     for warning in warnings:
         logger.warning(f"Deal {deal_id}: {warning}")
-        if "title cannot be changed" in warning.lower() or "immutable" in warning.lower():
+        if (
+            "title cannot be changed" in warning.lower()
+            or "immutable" in warning.lower()
+        ):
             try:
                 hubspot_client.add_note_to_deal(
                     deal_id,
-                    f"🔒 AWS Partner Central — Title Change Blocked\n\n{warning}"
+                    f"🔒 AWS Partner Central — Title Change Blocked\n\n{warning}",
                 )
                 # Revert the display title in HubSpot to the canonical PC title
                 canonical_title = current_pc_opp.get("Project", {}).get("Title", "")
                 if canonical_title:
                     display_title = (
-                        canonical_title if "#AWS" in canonical_title
+                        canonical_title
+                        if "#AWS" in canonical_title
                         else f"{canonical_title} #AWS"
                     )
-                    hubspot_client.update_deal(deal_id, {
-                        "dealname": display_title,
-                        "aws_opportunity_title": canonical_title,
-                    })
+                    hubspot_client.update_deal(
+                        deal_id,
+                        {
+                            "dealname": display_title,
+                            "aws_opportunity_title": canonical_title,
+                        },
+                    )
             except Exception as note_exc:
                 logger.warning(f"Could not add note to deal {deal_id}: {note_exc}")
-    
+
     if update_payload is None:
         return {
             "action": "blocked",
@@ -215,13 +224,13 @@ def process_hubspot_deal_update(
             "partnerCentralOpportunityId": opportunity_id,
             "warnings": warnings,
         }
-    
+
     # Send the update
     pc_client.update_opportunity(**update_payload)
     logger.info(f"Updated PC opportunity {opportunity_id} from deal {deal_id}")
-    
+
     hubspot_client.update_deal(deal_id, {"aws_sync_status": "synced"})
-    
+
     return {
         "action": "updated",
         "hubspotDealId": deal_id,
@@ -239,15 +248,15 @@ def _associate_solutions(
 ) -> list[str]:
     """
     Associate solutions with a Partner Central opportunity.
-    
+
     Supports both single solution (from env var) and multi-solution auto-matching.
-    
+
     Returns:
         List of associated solution IDs
     """
     solution_id = os.environ.get("PARTNER_CENTRAL_SOLUTION_ID")
     associated_solutions = []
-    
+
     if solution_id:
         # Single solution from environment variable (backward compatibility)
         _associate_single_solution(pc_client, opportunity_id, solution_id, logger)
@@ -257,7 +266,7 @@ def _associate_solutions(
         try:
             available_solutions = get_cached_solutions(pc_client)
             matched_solution_ids = match_solutions(deal, available_solutions)
-            
+
             if matched_solution_ids:
                 result = associate_multiple_solutions(
                     pc_client, opportunity_id, matched_solution_ids
@@ -271,13 +280,13 @@ def _associate_solutions(
                 logger.warning(f"No solutions matched for deal {deal.get('id')}")
         except Exception as exc:
             logger.warning(f"Solution auto-matching failed: {exc}")
-    
+
     if not associated_solutions:
         logger.warning(
             f"No solutions associated with opportunity {opportunity_id}. "
             f"Set PARTNER_CENTRAL_SOLUTION_ID or add aws_solution_ids to the deal."
         )
-    
+
     return associated_solutions
 
 
@@ -295,7 +304,9 @@ def _associate_single_solution(
             RelatedEntityIdentifier=solution_id,
             RelatedEntityType="Solutions",
         )
-        logger.info(f"Associated solution {solution_id} with opportunity {opportunity_id}")
+        logger.info(
+            f"Associated solution {solution_id} with opportunity {opportunity_id}"
+        )
     except Exception as exc:
         logger.warning(
             f"Could not associate solution {solution_id} with {opportunity_id}: {exc}"

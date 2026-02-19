@@ -61,29 +61,29 @@ def process_company_update(
 ) -> Dict[str, Any]:
     """
     Process HubSpot company property change event.
-    
+
     When a company property changes:
     1. Finds all deals associated with the company
     2. For each deal with an AWS opportunity, updates Partner Central
     3. Adds sync notes to deals
-    
+
     Args:
         sync_event: SyncEvent with company update data
         hubspot_client: HubSpot API client
         pc_client: Partner Central API client
         logger: Logger instance
-        
+
     Returns:
         Processing result dict
     """
     company_id = sync_event.object_id
     property_name = sync_event.properties.get("propertyName")
     property_value = sync_event.properties.get("propertyValue")
-    
+
     logger.info(
         f"Company {company_id} property '{property_name}' changed to '{property_value}'"
     )
-    
+
     # Get full company details
     company = hubspot_client.get_company(company_id)
     if not company:
@@ -92,10 +92,10 @@ def process_company_update(
             "reason": "company_not_found",
             "companyId": company_id,
         }
-    
+
     # Find all deals associated with this company
     associated_deals = hubspot_client.get_company_associations(company_id, "deals")
-    
+
     if not associated_deals:
         logger.info(f"No deals associated with company {company_id}")
         return {
@@ -103,19 +103,24 @@ def process_company_update(
             "reason": "no_deals",
             "companyId": company_id,
         }
-    
+
     logger.info(f"Found {len(associated_deals)} associated deals")
-    
+
     # Sync each deal's opportunity
     synced_count = 0
     skipped_count = 0
     errors = []
-    
+
     for deal_id in associated_deals:
         try:
             result = _sync_deal(
-                deal_id, company, property_name, property_value,
-                hubspot_client, pc_client, logger
+                deal_id,
+                company,
+                property_name,
+                property_value,
+                hubspot_client,
+                pc_client,
+                logger,
             )
             if result["synced"]:
                 synced_count += 1
@@ -126,7 +131,7 @@ def process_company_update(
         except Exception as e:
             logger.error(f"Error syncing deal {deal_id}: {e}", exc_info=True)
             errors.append(f"Deal {deal_id}: {str(e)}")
-    
+
     return {
         "action": "synced",
         "companyId": company_id,
@@ -149,7 +154,7 @@ def _sync_deal(
 ) -> Dict[str, Any]:
     """
     Sync a single deal's opportunity with company information.
-    
+
     Returns:
         Dict with 'synced' boolean and optional 'error' message
     """
@@ -158,15 +163,15 @@ def _sync_deal(
     if not deal:
         logger.warning(f"Deal {deal_id} not found, skipping")
         return {"synced": False}
-    
+
     # Check if deal has an AWS opportunity
     properties = deal.get("properties", {})
     opportunity_id = properties.get("aws_opportunity_id")
-    
+
     if not opportunity_id:
         logger.debug(f"Deal {deal_id} has no AWS opportunity, skipping")
         return {"synced": False}
-    
+
     # Get current opportunity from Partner Central
     try:
         current_opportunity = pc_client.get_opportunity(
@@ -175,19 +180,19 @@ def _sync_deal(
     except Exception as e:
         logger.error(f"Failed to get opportunity {opportunity_id}: {e}")
         return {"synced": False, "error": f"Deal {deal_id}: {str(e)}"}
-    
+
     # Build updated customer account information
     company_props = company.get("properties", {})
     customer_account = _map_company_to_partner_central_account(company_props)
-    
+
     # Build customer object
     customer = {"Account": customer_account}
-    
+
     # Preserve existing contacts
     existing_customer = current_opportunity.get("Customer", {})
     if "Contacts" in existing_customer:
         customer["Contacts"] = existing_customer["Contacts"]
-    
+
     # Update the opportunity
     update_payload = {
         "Catalog": "AWS",
@@ -196,14 +201,14 @@ def _sync_deal(
         "LifeCycle": current_opportunity.get("LifeCycle", {}),
         "Project": current_opportunity.get("Project", {}),
     }
-    
+
     # Remove Title from Project (immutable)
     if "Title" in update_payload["Project"]:
         del update_payload["Project"]["Title"]
-    
+
     logger.info(f"Updating opportunity {opportunity_id} with new company info")
     pc_client.update_opportunity(**update_payload)
-    
+
     # Add note to HubSpot deal
     note_text = f"""🔄 Company Information Synced to AWS Partner Central
 
@@ -212,60 +217,62 @@ Property changed: {property_name}
 New value: {property_value}
 
 Company information for this opportunity has been updated in AWS Partner Central."""
-    
+
     hubspot_client.create_deal_note(deal_id, note_text)
-    
+
     # Update sync timestamp
     hubspot_client.update_deal(
         deal_id,
         {"aws_contact_company_last_sync": hubspot_client.now_timestamp_ms()},
     )
-    
+
     logger.info(f"Successfully synced company to opportunity {opportunity_id}")
     return {"synced": True}
 
 
-def _map_company_to_partner_central_account(company_props: Dict[str, Any]) -> Dict[str, Any]:
+def _map_company_to_partner_central_account(
+    company_props: Dict[str, Any],
+) -> Dict[str, Any]:
     """
     Map HubSpot company properties to Partner Central Account format.
-    
+
     Args:
         company_props: HubSpot company properties dict
-        
+
     Returns:
         Partner Central Account dict
     """
     # Company name (required)
     company_name = company_props.get("name", "Unknown Company")[:120]
-    
+
     # Industry mapping
     raw_industry = company_props.get("industry", "").upper().replace(" ", "_")
     industry = HUBSPOT_INDUSTRY_TO_PC.get(raw_industry, "Other")
-    
+
     # Website URL
     website = company_props.get("website", "").strip()
     if website and not website.startswith("http"):
         website = "https://" + website
     website = website[:255] if website else None
-    
+
     # Address components
     street = company_props.get("address", "").strip()[:255]
     city = company_props.get("city", "").strip()[:50]
     state = company_props.get("state", "").strip()[:50]
     zip_code = company_props.get("zip", "").strip()[:10]
     country = company_props.get("country", "").strip()[:2].upper()
-    
+
     # Default to US if no country
     if not country:
         country = "US"
-    
+
     # Build account dict
     account = {
         "CompanyName": company_name,
         "Industry": industry,
         "Address": {"CountryCode": country},
     }
-    
+
     # Add optional fields
     if website:
         account["WebsiteUrl"] = website
@@ -277,5 +284,5 @@ def _map_company_to_partner_central_account(company_props: Dict[str, Any]) -> Di
         account["Address"]["PostalCode"] = zip_code
     if street:
         account["Address"]["StreetAddress"] = street
-    
+
     return account
