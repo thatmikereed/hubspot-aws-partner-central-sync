@@ -1,0 +1,432 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  CloudWatch Dashboard for Async Event-Driven Architecture
+  
+  Provides comprehensive monitoring of:
+  - SQS queue metrics (depth, age, throughput)
+  - Lambda function metrics (invocations, errors, duration)
+  - Recent error logs
+  - Processing latency
+
+Parameters:
+  Environment:
+    Type: String
+    Default: production
+    AllowedValues: [production, staging, development]
+    Description: Deployment environment
+  
+  QueueName:
+    Type: String
+    Description: Name of the main FIFO queue
+  
+  DLQName:
+    Type: String
+    Description: Name of the dead letter queue
+  
+  ReceiptFunctionName:
+    Type: String
+    Description: Name of the webhook receipt function
+  
+  ProcessorFunctionName:
+    Type: String
+    Description: Name of the event processor function
+
+Resources:
+  AsyncArchitectureDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub "HubSpot-Async-${Environment}"
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "text",
+              "x": 0,
+              "y": 0,
+              "width": 24,
+              "height": 1,
+              "properties": {
+                "markdown": "# HubSpot Async Event-Driven Architecture - ${Environment}\n\nMonitoring for webhook receipt, SQS queues, and event processing."
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 1,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  ["AWS/SQS", "ApproximateNumberOfMessagesVisible", {"stat": "Average", "label": "Messages in Queue"}],
+                  [".", "ApproximateNumberOfMessagesNotVisible", {"stat": "Average", "label": "Messages in Flight"}],
+                  [".", "ApproximateNumberOfMessagesDelayed", {"stat": "Average", "label": "Delayed Messages"}]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Main Queue Depth",
+                "period": 60,
+                "yAxis": {
+                  "left": {
+                    "min": 0
+                  }
+                },
+                "dimensions": {
+                  "QueueName": "${QueueName}"
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 1,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  ["AWS/SQS", "ApproximateNumberOfMessagesVisible", {"stat": "Average", "label": "Messages in DLQ"}]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Dead Letter Queue (Failed Messages)",
+                "period": 60,
+                "yAxis": {
+                  "left": {
+                    "min": 0
+                  }
+                },
+                "dimensions": {
+                  "QueueName": "${DLQName}"
+                },
+                "annotations": {
+                  "horizontal": [
+                    {
+                      "label": "Alert Threshold",
+                      "value": 0
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 7,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  ["AWS/SQS", "ApproximateAgeOfOldestMessage", {"stat": "Maximum", "label": "Oldest Message Age (seconds)"}]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Queue Age (Processing Latency)",
+                "period": 60,
+                "yAxis": {
+                  "left": {
+                    "min": 0
+                  }
+                },
+                "dimensions": {
+                  "QueueName": "${QueueName}"
+                },
+                "annotations": {
+                  "horizontal": [
+                    {
+                      "label": "5 Minute Warning",
+                      "value": 300,
+                      "fill": "above"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 7,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  ["AWS/SQS", "NumberOfMessagesSent", {"stat": "Sum", "label": "Messages Sent"}],
+                  [".", "NumberOfMessagesReceived", {"stat": "Sum", "label": "Messages Received"}],
+                  [".", "NumberOfMessagesDeleted", {"stat": "Sum", "label": "Messages Deleted"}]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Queue Throughput",
+                "period": 60,
+                "yAxis": {
+                  "left": {
+                    "min": 0
+                  }
+                },
+                "dimensions": {
+                  "QueueName": "${QueueName}"
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 13,
+              "width": 8,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  ["AWS/Lambda", "Invocations", {"stat": "Sum", "label": "Invocations"}]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Receipt Handler - Invocations",
+                "period": 60,
+                "yAxis": {
+                  "left": {
+                    "min": 0
+                  }
+                },
+                "dimensions": {
+                  "FunctionName": "${ReceiptFunctionName}"
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 8,
+              "y": 13,
+              "width": 8,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  ["AWS/Lambda", "Errors", {"stat": "Sum", "label": "Errors", "color": "#d62728"}],
+                  [".", "Throttles", {"stat": "Sum", "label": "Throttles", "color": "#ff7f0e"}]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Receipt Handler - Errors & Throttles",
+                "period": 60,
+                "yAxis": {
+                  "left": {
+                    "min": 0
+                  }
+                },
+                "dimensions": {
+                  "FunctionName": "${ReceiptFunctionName}"
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 16,
+              "y": 13,
+              "width": 8,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  ["AWS/Lambda", "Duration", {"stat": "Average", "label": "Avg Duration"}],
+                  ["...", {"stat": "Maximum", "label": "Max Duration"}],
+                  ["...", {"stat": "p99", "label": "P99 Duration"}]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Receipt Handler - Duration (ms)",
+                "period": 60,
+                "yAxis": {
+                  "left": {
+                    "min": 0,
+                    "max": 100
+                  }
+                },
+                "dimensions": {
+                  "FunctionName": "${ReceiptFunctionName}"
+                },
+                "annotations": {
+                  "horizontal": [
+                    {
+                      "label": "100ms Target",
+                      "value": 100,
+                      "fill": "above"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 19,
+              "width": 8,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  ["AWS/Lambda", "Invocations", {"stat": "Sum", "label": "Invocations"}]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Event Processor - Invocations",
+                "period": 60,
+                "yAxis": {
+                  "left": {
+                    "min": 0
+                  }
+                },
+                "dimensions": {
+                  "FunctionName": "${ProcessorFunctionName}"
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 8,
+              "y": 19,
+              "width": 8,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  ["AWS/Lambda", "Errors", {"stat": "Sum", "label": "Errors", "color": "#d62728"}],
+                  [".", "Throttles", {"stat": "Sum", "label": "Throttles", "color": "#ff7f0e"}]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Event Processor - Errors & Throttles",
+                "period": 60,
+                "yAxis": {
+                  "left": {
+                    "min": 0
+                  }
+                },
+                "dimensions": {
+                  "FunctionName": "${ProcessorFunctionName}"
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 16,
+              "y": 19,
+              "width": 8,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  ["AWS/Lambda", "Duration", {"stat": "Average", "label": "Avg Duration"}],
+                  ["...", {"stat": "Maximum", "label": "Max Duration"}],
+                  ["...", {"stat": "p99", "label": "P99 Duration"}]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Event Processor - Duration (ms)",
+                "period": 60,
+                "yAxis": {
+                  "left": {
+                    "min": 0
+                  }
+                },
+                "dimensions": {
+                  "FunctionName": "${ProcessorFunctionName}"
+                }
+              }
+            },
+            {
+              "type": "log",
+              "x": 0,
+              "y": 25,
+              "width": 24,
+              "height": 6,
+              "properties": {
+                "query": "SOURCE '/aws/lambda/${ReceiptFunctionName}'\n| SOURCE '/aws/lambda/${ProcessorFunctionName}'\n| fields @timestamp, @message\n| filter @message like /ERROR|Error|error|Exception/\n| sort @timestamp desc\n| limit 20",
+                "region": "${AWS::Region}",
+                "title": "Recent Errors (Last 20)",
+                "stacked": false
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 31,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [{"expression": "m1 / m2 * 100", "label": "Error Rate (%)", "id": "e1"}],
+                  ["AWS/Lambda", "Errors", {"id": "m1", "visible": false}],
+                  [".", "Invocations", {"id": "m2", "visible": false}]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Receipt Handler - Error Rate",
+                "period": 300,
+                "yAxis": {
+                  "left": {
+                    "min": 0,
+                    "max": 10
+                  }
+                },
+                "dimensions": {
+                  "FunctionName": "${ReceiptFunctionName}"
+                },
+                "annotations": {
+                  "horizontal": [
+                    {
+                      "label": "5% Threshold",
+                      "value": 5,
+                      "fill": "above"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 31,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [{"expression": "m1 / m2 * 100", "label": "Error Rate (%)", "id": "e1"}],
+                  ["AWS/Lambda", "Errors", {"id": "m1", "visible": false}],
+                  [".", "Invocations", {"id": "m2", "visible": false}]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Event Processor - Error Rate",
+                "period": 300,
+                "yAxis": {
+                  "left": {
+                    "min": 0,
+                    "max": 10
+                  }
+                },
+                "dimensions": {
+                  "FunctionName": "${ProcessorFunctionName}"
+                },
+                "annotations": {
+                  "horizontal": [
+                    {
+                      "label": "5% Threshold",
+                      "value": 5,
+                      "fill": "above"
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+
+Outputs:
+  DashboardUrl:
+    Description: URL to the CloudWatch Dashboard
+    Value: !Sub "https://console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=HubSpot-Async-${Environment}"
