@@ -6,11 +6,11 @@ Provides Pydantic models for event validation and SQS message conversion.
 
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class EventType(str, Enum):
@@ -58,7 +58,7 @@ class SyncEvent(BaseModel):
     
     # Event timing
     timestamp: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=lambda: datetime.now(timezone.utc),
         description="Event creation timestamp (UTC)"
     )
     
@@ -86,12 +86,12 @@ class SyncEvent(BaseModel):
         description="Number of processing attempts"
     )
     
-    class Config:
-        """Pydantic configuration."""
-        use_enum_values = True
-        json_encoders = {
+    model_config = ConfigDict(
+        use_enum_values=True,
+        json_encoders={
             datetime: lambda v: v.isoformat()
         }
+    )
     
     @field_validator('timestamp', mode='before')
     @classmethod
