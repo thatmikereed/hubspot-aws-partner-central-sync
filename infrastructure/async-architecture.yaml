@@ -1,0 +1,376 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+
+Description: >
+  Async Event-Driven Architecture for HubSpot-AWS Partner Central Sync
+  
+  Provides:
+  - FIFO SQS queues for reliable event processing
+  - Fast webhook receipt handler (<100ms response)
+  - Event processor with retry logic and DLQ
+  - CloudWatch alarms for monitoring
+  
+  This is deployed alongside existing handlers for gradual migration.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: production
+    AllowedValues: [production, staging, development]
+    Description: Deployment environment
+  
+  HubSpotAccessToken:
+    Type: String
+    NoEcho: true
+    Description: HubSpot Private App access token
+  
+  HubSpotWebhookSecret:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: HubSpot webhook signing secret (optional but recommended)
+  
+  PartnerCentralRoleArn:
+    Type: String
+    Default: ""
+    Description: ARN of the HubSpotPartnerCentralServiceRole
+  
+  PartnerCentralSolutionId:
+    Type: String
+    Default: ""
+    Description: Partner Central Solution ID (e.g. S-0000001)
+  
+  AlarmEmail:
+    Type: String
+    Default: ""
+    Description: Email address for CloudWatch alarm notifications (optional)
+
+Resources:
+  # ============================================================
+  # SQS Queues
+  # ============================================================
+  
+  # Dead Letter Queue (must be created first)
+  SyncEventsDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "hubspot-sync-events-dlq-${Environment}.fifo"
+      FifoQueue: true
+      ContentBasedDeduplication: true
+      MessageRetentionPeriod: 1209600  # 14 days
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Component
+          Value: AsyncArchitecture
+  
+  # Main FIFO Queue
+  SyncEventsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "hubspot-sync-events-${Environment}.fifo"
+      FifoQueue: true
+      ContentBasedDeduplication: true
+      MessageRetentionPeriod: 1209600  # 14 days
+      VisibilityTimeout: 300  # 5 minutes (match Lambda timeout)
+      ReceiveMessageWaitTimeSeconds: 20  # Long polling
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt SyncEventsDLQ.Arn
+        maxReceiveCount: 3  # 3 attempts before DLQ
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Component
+          Value: AsyncArchitecture
+  
+  # ============================================================
+  # Lambda Layer (Common Modules)
+  # ============================================================
+  
+  AsyncCommonLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: !Sub "hubspot-async-common-${Environment}"
+      Description: Shared common modules for async architecture
+      ContentUri: ../../src/
+      CompatibleRuntimes: [python3.11, python3.12]
+      RetentionPolicy: Retain
+    Metadata:
+      BuildMethod: python3.12
+  
+  # ============================================================
+  # Lambda Functions
+  # ============================================================
+  
+  # Webhook Receipt Handler - Fast receiver (<100ms)
+  WebhookReceiptFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "webhook-receipt-handler-${Environment}"
+      CodeUri: ../../src/webhook_receipt/
+      Handler: handler.lambda_handler
+      Runtime: python3.12
+      MemorySize: 256
+      Timeout: 10
+      Architectures: [arm64]
+      Description: Fast webhook receiver that enqueues events to SQS
+      Environment:
+        Variables:
+          HUBSPOT_ACCESS_TOKEN: !Ref HubSpotAccessToken
+          HUBSPOT_WEBHOOK_SECRET: !Ref HubSpotWebhookSecret
+          SQS_QUEUE_URL: !Ref SyncEventsQueue
+          ENVIRONMENT: !Ref Environment
+          LOG_LEVEL: INFO
+      Layers:
+        - !Ref AsyncCommonLayer
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action:
+                - sqs:SendMessage
+                - sqs:GetQueueAttributes
+              Resource: !GetAtt SyncEventsQueue.Arn
+      Events:
+        WebhookApi:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AsyncWebhookApi
+            Path: /async/webhook
+            Method: POST
+  
+  # Event Processor - Processes events from SQS
+  EventProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "sync-event-processor-${Environment}"
+      CodeUri: ../../src/event_processor/
+      Handler: handler.lambda_handler
+      Runtime: python3.12
+      MemorySize: 512
+      Timeout: 240  # 4 minutes
+      Architectures: [arm64]
+      Description: Processes sync events from SQS queue
+      Environment:
+        Variables:
+          HUBSPOT_ACCESS_TOKEN: !Ref HubSpotAccessToken
+          PARTNER_CENTRAL_ROLE_ARN: !Ref PartnerCentralRoleArn
+          PARTNER_CENTRAL_SOLUTION_ID: !Ref PartnerCentralSolutionId
+          ENVIRONMENT: !Ref Environment
+          LOG_LEVEL: INFO
+      Layers:
+        - !Ref AsyncCommonLayer
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action: sts:AssumeRole
+              Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/HubSpotPartnerCentralServiceRole"
+        - Statement:
+            - Effect: Allow
+              Action:
+                - sqs:ReceiveMessage
+                - sqs:DeleteMessage
+                - sqs:GetQueueAttributes
+              Resource: !GetAtt SyncEventsQueue.Arn
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt SyncEventsQueue.Arn
+            BatchSize: 1  # Process one at a time for reliability
+            Enabled: true
+  
+  # ============================================================
+  # API Gateway
+  # ============================================================
+  
+  AsyncWebhookApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub "hubspot-async-webhook-${Environment}"
+      StageName: !Ref Environment
+      Description: API Gateway for async webhook ingestion
+      EndpointConfiguration:
+        Type: REGIONAL
+      Auth:
+        DefaultAuthorizer: NONE
+  
+  # ============================================================
+  # CloudWatch Log Groups
+  # ============================================================
+  
+  WebhookReceiptLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/webhook-receipt-handler-${Environment}"
+      RetentionInDays: 30
+  
+  EventProcessorLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/sync-event-processor-${Environment}"
+      RetentionInDays: 30
+  
+  # ============================================================
+  # SNS Topic for Alarms
+  # ============================================================
+  
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "hubspot-async-alarms-${Environment}"
+      DisplayName: HubSpot Async Architecture Alarms
+      Subscription:
+        - !If
+          - HasAlarmEmail
+          - Endpoint: !Ref AlarmEmail
+            Protocol: email
+          - !Ref AWS::NoValue
+  
+  # ============================================================
+  # CloudWatch Alarms
+  # ============================================================
+  
+  # Alarm: Messages in DLQ
+  DLQMessagesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "hubspot-async-dlq-messages-${Environment}"
+      AlarmDescription: Alert when messages appear in DLQ (failed after 3 retries)
+      MetricName: ApproximateNumberOfMessagesVisible
+      Namespace: AWS/SQS
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt SyncEventsDLQ.QueueName
+      AlarmActions:
+        - !Ref AlarmTopic
+      TreatMissingData: notBreaching
+  
+  # Alarm: Queue age > 5 minutes
+  QueueAgeAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "hubspot-async-queue-age-${Environment}"
+      AlarmDescription: Alert when oldest message in queue is > 5 minutes
+      MetricName: ApproximateAgeOfOldestMessage
+      Namespace: AWS/SQS
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 300  # 5 minutes
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt SyncEventsQueue.QueueName
+      AlarmActions:
+        - !Ref AlarmTopic
+      TreatMissingData: notBreaching
+  
+  # Alarm: Receipt handler errors > 5%
+  ReceiptErrorRateAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "hubspot-async-receipt-errors-${Environment}"
+      AlarmDescription: Alert when receipt handler error rate exceeds 5%
+      Metrics:
+        - Id: errors
+          MetricStat:
+            Metric:
+              Namespace: AWS/Lambda
+              MetricName: Errors
+              Dimensions:
+                - Name: FunctionName
+                  Value: !Ref WebhookReceiptFunction
+            Period: 300
+            Stat: Sum
+        - Id: invocations
+          MetricStat:
+            Metric:
+              Namespace: AWS/Lambda
+              MetricName: Invocations
+              Dimensions:
+                - Name: FunctionName
+                  Value: !Ref WebhookReceiptFunction
+            Period: 300
+            Stat: Sum
+        - Id: error_rate
+          Expression: "(errors / invocations) * 100"
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref AlarmTopic
+      TreatMissingData: notBreaching
+  
+  # Alarm: Processor errors > 5%
+  ProcessorErrorRateAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "hubspot-async-processor-errors-${Environment}"
+      AlarmDescription: Alert when event processor error rate exceeds 5%
+      Metrics:
+        - Id: errors
+          MetricStat:
+            Metric:
+              Namespace: AWS/Lambda
+              MetricName: Errors
+              Dimensions:
+                - Name: FunctionName
+                  Value: !Ref EventProcessorFunction
+            Period: 300
+            Stat: Sum
+        - Id: invocations
+          MetricStat:
+            Metric:
+              Namespace: AWS/Lambda
+              MetricName: Invocations
+              Dimensions:
+                - Name: FunctionName
+                  Value: !Ref EventProcessorFunction
+            Period: 300
+            Stat: Sum
+        - Id: error_rate
+          Expression: "(errors / invocations) * 100"
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref AlarmTopic
+      TreatMissingData: notBreaching
+
+Conditions:
+  HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, ""]]
+
+# ============================================================
+# Outputs
+# ============================================================
+Outputs:
+  AsyncWebhookUrl:
+    Description: Async webhook URL for HubSpot webhooks
+    Value: !Sub "https://${AsyncWebhookApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/async/webhook"
+  
+  SyncEventsQueueUrl:
+    Description: Main sync events queue URL
+    Value: !Ref SyncEventsQueue
+  
+  SyncEventsDLQUrl:
+    Description: Dead letter queue URL
+    Value: !Ref SyncEventsDLQ
+  
+  WebhookReceiptFunctionArn:
+    Description: Webhook receipt handler ARN
+    Value: !GetAtt WebhookReceiptFunction.Arn
+  
+  EventProcessorFunctionArn:
+    Description: Event processor ARN
+    Value: !GetAtt EventProcessorFunction.Arn
+  
+  AlarmTopicArn:
+    Description: SNS topic for alarms
+    Value: !Ref AlarmTopic
